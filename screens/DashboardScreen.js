@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, FlatList, TouchableOpacity, StyleSheet, Modal, SafeAreaView } from 'react-native';
+import { View, FlatList, TouchableOpacity, StyleSheet, Modal, SafeAreaView, Platform } from 'react-native';
 import { collection, query, where, onSnapshot, addDoc } from 'firebase/firestore';
 import { auth, db } from '../firebaseConfig';
 import { signOut } from 'firebase/auth';
@@ -8,11 +8,30 @@ import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { Text } from '../components/ui/Text';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '../components/ui/Card';
+import ProjectProcessingOverlay from '../components/ProjectProcessingOverlay';
+
+import { DeviceEventEmitter } from 'react-native';
+import { Feather } from '@expo/vector-icons';
+// ... imports
 
 export default function DashboardScreen({ navigation }) {
     const [projects, setProjects] = useState([]);
-    const [modalVisible, setModalVisible] = useState(false);
-    const [newProjectName, setNewProjectName] = useState('');
+    const [processingData, setProcessingData] = useState(null);
+
+    useEffect(() => {
+        // Listener for Project Creation from Modal
+        const subscription = DeviceEventEmitter.addListener('create-project-processing', (data) => {
+            // Wait for the modal to dismiss before showing the overlay
+            const timer = setTimeout(() => {
+                setProcessingData(data);
+            }, 600);
+            return () => clearTimeout(timer);
+        });
+
+        return () => {
+            subscription.remove();
+        };
+    }, []);
 
     useEffect(() => {
         const user = auth.currentUser;
@@ -20,7 +39,7 @@ export default function DashboardScreen({ navigation }) {
 
         // Listen to projects created by this user
         const q = query(collection(db, "projects"), where("ownerId", "==", user.uid));
-        const unsubscribe = onSnapshot(q, (snapshot) => {
+        const unsubscribeProjects = onSnapshot(q, (snapshot) => {
             const projectsData = [];
             snapshot.forEach((doc) => {
                 projectsData.push({ id: doc.id, ...doc.data() });
@@ -28,48 +47,57 @@ export default function DashboardScreen({ navigation }) {
             setProjects(projectsData);
         });
 
-        return () => unsubscribe();
+        return () => unsubscribeProjects();
     }, []);
 
-    const handleCreateProject = async () => {
-        if (!newProjectName.trim()) return;
+    const handleProcessingComplete = (projectId) => {
+        setProcessingData(null);
+        // Optionally navigate to details or just stay on dashboard
+        // navigation.navigate('ProjectDetail', { projectId });
+    };
 
-        try {
-            await addDoc(collection(db, "projects"), {
-                name: newProjectName,
-                ownerId: auth.currentUser.uid,
-                createdAt: new Date(),
-                status: 'active'
-            });
-            setNewProjectName('');
-            setModalVisible(false);
-        } catch (error) {
-            alert("Error creating project: " + error.message);
-        }
+    const handleProcessingError = (error) => {
+        // Overlay handles display, but if closed:
+        setProcessingData(null);
     };
 
     const handleLogout = () => {
         signOut(auth);
     };
 
-    const renderProjectItem = ({ item }) => (
-        <TouchableOpacity
-            activeOpacity={0.8}
-            onPress={() => navigation.navigate('ProjectDetail', { projectId: item.id, projectName: item.name })}
-        >
-            <Card style={styles.projectCard}>
-                <CardHeader>
-                    <View style={styles.projectHeader}>
-                        <CardTitle>{item.name}</CardTitle>
-                        <Text variant="small" style={{ color: theme.colors.emerald?.[600] || 'green' }}>{item.status}</Text>
-                    </View>
-                </CardHeader>
-                <CardContent>
-                    <Text variant="muted">Tap to view details</Text>
-                </CardContent>
-            </Card>
-        </TouchableOpacity>
-    );
+    const renderProjectItem = ({ item }) => {
+
+        return (
+            <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={() => navigation.navigate('ProjectDetail', { projectId: item.id, projectName: item.name })}
+            >
+                <Card style={styles.projectCard}>
+                    <CardHeader>
+                        <View style={styles.projectHeader}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                <View style={{
+                                    width: 40, height: 40, borderRadius: 20,
+                                    backgroundColor: theme.colors.gray[100],
+                                    justifyContent: 'center', alignItems: 'center',
+                                    marginRight: 12
+                                }}>
+                                    <Feather name={item.icon || 'list'} size={20} color={theme.colors.primary.DEFAULT} />
+                                </View>
+                                <CardTitle>{item.name}</CardTitle>
+                            </View>
+                            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                <Text variant="small" style={{ color: theme.colors.emerald?.[600] || 'green' }}>{item.status}</Text>
+                            </View>
+                        </View>
+                    </CardHeader>
+                    <CardContent>
+                        <Text variant="muted">Tap to view details</Text>
+                    </CardContent>
+                </Card>
+            </TouchableOpacity>
+        );
+    };
 
     return (
         <SafeAreaView style={styles.container}>
@@ -88,49 +116,18 @@ export default function DashboardScreen({ navigation }) {
             />
 
             <View style={styles.fabContainer}>
-                <Button onPress={() => setModalVisible(true)} size="lg" style={styles.fab}>
+                <Button onPress={() => navigation.navigate('ProjectCreateModal')} size="lg" style={styles.fab}>
                     + New Project
                 </Button>
             </View>
 
-            <Modal
-                animationType="fade"
-                transparent={true}
-                visible={modalVisible}
-                onRequestClose={() => setModalVisible(false)}
-            >
-                <View style={styles.modalOverlay}>
-                    <Card style={styles.modalView}>
-                        <CardHeader>
-                            <CardTitle>New Project</CardTitle>
-                            <CardDescription>Enter the name for your new project.</CardDescription>
-                        </CardHeader>
-                        <CardContent>
-                            <Input
-                                placeholder="Project Name"
-                                value={newProjectName}
-                                onChangeText={setNewProjectName}
-                                autoFocus
-                            />
-                            <View style={styles.modalButtons}>
-                                <Button
-                                    variant="outline"
-                                    onPress={() => setModalVisible(false)}
-                                    style={{ flex: 1, marginRight: theme.spacing[2] }}
-                                >
-                                    Cancel
-                                </Button>
-                                <Button
-                                    onPress={handleCreateProject}
-                                    style={{ flex: 1, marginLeft: theme.spacing[2] }}
-                                >
-                                    Create
-                                </Button>
-                            </View>
-                        </CardContent>
-                    </Card>
-                </View>
-            </Modal>
+            {/* Processing Overlay */}
+            <ProjectProcessingOverlay
+                isVisible={!!processingData}
+                projectData={processingData}
+                onComplete={handleProcessingComplete}
+                onError={handleProcessingError}
+            />
         </SafeAreaView>
     );
 }
@@ -142,6 +139,7 @@ const styles = StyleSheet.create({
     },
     header: {
         padding: theme.spacing[6],
+        paddingTop: Platform.OS === 'android' ? theme.spacing[12] : theme.spacing[6],
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
@@ -161,7 +159,7 @@ const styles = StyleSheet.create({
     },
     fabContainer: {
         position: 'absolute',
-        bottom: theme.spacing[8],
+        bottom: Platform.OS === 'android' ? theme.spacing[12] : theme.spacing[8],
         right: theme.spacing[6],
     },
     fab: {
@@ -172,19 +170,12 @@ const styles = StyleSheet.create({
         elevation: 8,
         borderRadius: theme.radius.full,
     },
-    modalOverlay: {
-        flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
-        backgroundColor: 'rgba(0,0,0,0.5)',
-        padding: theme.spacing[6],
-    },
-    modalView: {
-        width: '100%',
-        maxWidth: 400,
-    },
-    modalButtons: {
-        flexDirection: 'row',
-        marginTop: theme.spacing[4],
-    },
+
+    notificationBadge: {
+        width: 10,
+        height: 10,
+        borderRadius: 5,
+        backgroundColor: theme.colors.destructive.DEFAULT,
+        marginRight: 8,
+    }
 });

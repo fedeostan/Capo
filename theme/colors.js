@@ -1,6 +1,6 @@
 export const colors = {
     white: '#FFFFFF',
-    black: '#09090b', // Zinc-950
+    black: '#27272a', // Zinc-800 - significantly lighter than pure black
 
     // Grays (Slate/Zinc inspired)
     gray: {
@@ -13,8 +13,8 @@ export const colors = {
         600: '#52525b',
         700: '#3f3f46',
         800: '#27272a',
-        900: '#18181b',
-        950: '#09090b',
+        900: '#27272a', // Capped at 800 for minimal look
+        950: '#27272a', // Capped at 800
     },
     emerald: {
         600: '#059669',
@@ -30,7 +30,7 @@ export const colors = {
 
     // Semantic
     background: '#FFFFFF',
-    foreground: '#09090b',
+    foreground: '#27272a',
 
     muted: {
         DEFAULT: '#f4f4f5', // Gray-100

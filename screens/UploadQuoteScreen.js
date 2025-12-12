@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, StyleSheet, Image, SafeAreaView, TouchableOpacity } from 'react-native';
+import { View, StyleSheet, Image, SafeAreaView, TouchableOpacity, ScrollView, Platform } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { storage, db } from '../firebaseConfig';
@@ -18,7 +18,7 @@ export default function UploadQuoteScreen({ route, navigation }) {
     const pickImage = async () => {
         let result = await ImagePicker.launchImageLibraryAsync({
             mediaTypes: ImagePicker.MediaTypeOptions.Images,
-            allowsEditing: true,
+            allowsEditing: Platform.OS === 'ios', // Disable editing on Android to avoid UI issues
             quality: 1,
         });
 
@@ -35,7 +35,7 @@ export default function UploadQuoteScreen({ route, navigation }) {
         }
 
         let result = await ImagePicker.launchCameraAsync({
-            allowsEditing: true,
+            allowsEditing: Platform.OS === 'ios',
             quality: 1,
         });
 
@@ -90,7 +90,7 @@ export default function UploadQuoteScreen({ route, navigation }) {
                 </View>
             </View>
 
-            <View style={styles.content}>
+            <ScrollView contentContainerStyle={styles.content}>
                 {image ? (
                     <Card style={styles.previewCard}>
                         <Image source={{ uri: image }} style={styles.preview} />
@@ -133,7 +133,7 @@ export default function UploadQuoteScreen({ route, navigation }) {
                         </Button>
                     )}
                 </View>
-            </View>
+            </ScrollView>
         </SafeAreaView>
     );
 }
@@ -154,7 +154,6 @@ const styles = StyleSheet.create({
         padding: theme.spacing[1],
     },
     content: {
-        flex: 1,
         padding: theme.spacing[6],
         alignItems: 'center',
     },

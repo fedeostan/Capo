@@ -1,22 +1,54 @@
+```javascript
 import React, { useEffect, useState } from 'react';
-import { View, StyleSheet, ScrollView, TouchableOpacity, Modal, SafeAreaView, Dimensions, FlatList, TextInput } from 'react-native';
-import { DraxProvider, DraxView, DraxScrollView } from 'react-native-drax';
-import { collection, query, where, onSnapshot, addDoc, setDoc, doc } from 'firebase/firestore';
+import { View, StyleSheet, ScrollView, TouchableOpacity, Modal, Dimensions, FlatList, TextInput, Platform, Alert } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { collection, query, where, onSnapshot, addDoc, setDoc, doc, deleteDoc } from 'firebase/firestore';
 import { db } from '../firebaseConfig';
 import { theme } from '../theme';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { Text } from '../components/ui/Text';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '../components/ui/Card';
+import { formatDate } from '../utils/formatDate';
 import { Feather } from '@expo/vector-icons';
 import * as Contacts from 'expo-contacts';
+import DateTimePicker from '@react-native-community/datetimepicker';
+
+import { BottomSheet } from '../components/ui/BottomSheet';
+import { AILogViewer } from '../components/AILogViewer';
 
 const COLUMN_WIDTH = 300;
+
+const PREDEFINED_ICONS = ['list', 'layout', 'trello', 'calendar', 'check-square', 'clipboard', 'layers', 'grid'];
+
+const formatPhoneNumber = (phone) => {
+    if (!phone) return '';
+    // Strip all non-numeric characters
+    const cleaned = phone.replace(/\D/g, '');
+
+    // Check formatting
+    if (cleaned.length === 10) {
+        return `+ 1${ cleaned } `;
+    } else if (cleaned.length === 11 && cleaned.startsWith('1')) {
+        return `+ ${ cleaned } `;
+    } else {
+        // Fallback: prepend + if not present (best effort for international)
+        return `+ ${ cleaned } `;
+    }
+};
 
 export default function ProjectDetailScreen({ route, navigation }) {
     const { projectId, projectName } = route.params;
     const [tasks, setTasks] = useState([]);
     const [modalVisible, setModalVisible] = useState(false);
+
+    // Header specific state
+    const [projectNameState, setProjectNameState] = useState(projectName);
+    const [projectIcon, setProjectIcon] = useState('list');
+    const [headerMenuVisible, setHeaderMenuVisible] = useState(false);
+    const [deleteModalVisible, setDeleteModalVisible] = useState(false);
+    const [aiLogVisible, setAiLogVisible] = useState(false);
+
     const [newTaskTitle, setNewTaskTitle] = useState('');
     const [newTaskDescription, setNewTaskDescription] = useState('');
     const [newTaskDueDate, setNewTaskDueDate] = useState('');
@@ -24,6 +56,69 @@ export default function ProjectDetailScreen({ route, navigation }) {
     const [newTaskDuration, setNewTaskDuration] = useState('');
     const [newTaskDependencies, setNewTaskDependencies] = useState([]); // Array of task IDs
     const [dependencyModalVisible, setDependencyModalVisible] = useState(false);
+    
+    // Date Picker State for Task Details
+    const [showStartDatePicker, setShowStartDatePicker] = useState(false);
+    const [showDueDatePicker, setShowDueDatePicker] = useState(false);
+
+    const onStartDateChange = async (event, selectedDate) => {
+        if (Platform.OS === 'android') {
+            setShowStartDatePicker(false);
+        }
+        
+        if (selectedDate && selectedTask) {
+            // Validation: Start Date cannot be after Due Date (if Due Date is set)
+            if (selectedTask.dueDate) {
+                const due = new Date(selectedTask.dueDate);
+                if (selectedDate > due) {
+                    Alert.alert("Invalid Date", "Start date cannot be after due date.");
+                    return;
+                }
+            }
+            
+            // Update local state and Firestore
+            const isoDate = selectedDate.toISOString().split('T')[0];
+            const updated = { ...selectedTask, startDate: isoDate };
+            setSelectedTask(updated);
+            
+            try {
+                await setDoc(doc(db, "tasks", selectedTask.id), { startDate: isoDate }, { merge: true });
+            } catch (e) {
+                console.error("Error updating start date", e);
+                Alert.alert("Error", "Failed to update start date");
+            }
+        }
+    };
+
+    const onDueDateChange = async (event, selectedDate) => {
+        if (Platform.OS === 'android') {
+            setShowDueDatePicker(false);
+        }
+
+        if (selectedDate && selectedTask) {
+             // Validation: Due Date cannot be before Start Date
+             if (selectedTask.startDate) {
+                const start = new Date(selectedTask.startDate);
+                if (selectedDate < start) {
+                    Alert.alert("Invalid Date", "Due date cannot be before start date.");
+                    return;
+                }
+            }
+
+            // Update local state and Firestore
+            const isoDate = selectedDate.toISOString().split('T')[0];
+            // Also unset 'status: done' if we are changing due date? Maybe not necessarily.
+            const updated = { ...selectedTask, dueDate: isoDate };
+            setSelectedTask(updated);
+
+            try {
+                await setDoc(doc(db, "tasks", selectedTask.id), { dueDate: isoDate }, { merge: true });
+            } catch (e) {
+                console.error("Error updating due date", e);
+                Alert.alert("Error", "Failed to update due date");
+            }
+        }
+    };
     const [newTaskAssignee, setNewTaskAssignee] = useState('');
     const [newTaskPhone, setNewTaskPhone] = useState('');
     const [conflictWarning, setConflictWarning] = useState(null);
@@ -31,6 +126,15 @@ export default function ProjectDetailScreen({ route, navigation }) {
     const [collapsedSections, setCollapsedSections] = useState({});
     const [menuVisible, setMenuVisible] = useState(false);
     const [selectedTask, setSelectedTask] = useState(null);
+    const [moveMenuTask, setMoveMenuTask] = useState(null);
+
+    // DEBUG: Monitor tasks for isNew
+    useEffect(() => {
+        const newTasks = tasks.filter(t => t.isNew);
+        if (newTasks.length > 0) {
+            console.log(`[ProjectDetail] Found ${ newTasks.length } new tasks: `, newTasks.map(t => t.id));
+        }
+    }, [tasks]);
 
     useEffect(() => {
         const q = query(collection(db, "tasks"), where("projectId", "==", projectId));
@@ -43,7 +147,35 @@ export default function ProjectDetailScreen({ route, navigation }) {
         });
 
         return () => unsubscribe();
+        return () => unsubscribe();
     }, [projectId]);
+
+    // Listen to Project Details (Name, Icon)
+    useEffect(() => {
+        const unsubscribeProject = onSnapshot(doc(db, "projects", projectId), (docSnap) => {
+            if (docSnap.exists()) {
+                const data = docSnap.data();
+                if (data.name) navigation.setParams({ projectName: data.name }); // Update param if needed, or just use state
+                // Since we render from params or local state, let's use local state for header info to be reactive
+                setProjectNameState(data.name || projectName);
+                setProjectIcon(data.icon || 'list');
+            }
+        });
+        return () => unsubscribeProject();
+    }, [projectId]);
+
+    const handleDeleteProject = async () => {
+        try {
+            console.log("Deleting project", projectId);
+            await deleteDoc(doc(db, "projects", projectId));
+
+            setDeleteModalVisible(false);
+            navigation.goBack();
+        } catch (error) {
+            console.error("Error deleting project:", error);
+            alert("Failed to delete project: " + error.message);
+        }
+    };
 
     const checkConflicts = (phone, startDate, duration) => {
         if (!phone || !startDate || !duration) return null;
@@ -87,24 +219,42 @@ export default function ProjectDetailScreen({ route, navigation }) {
         return null;
     };
 
-    const handlePickContact = async () => {
+    const handlePickContact = async (isNew = true) => {
         try {
             const { status } = await Contacts.requestPermissionsAsync();
             if (status === 'granted') {
                 const contact = await Contacts.presentContactPickerAsync();
                 if (contact) {
-                    setNewTaskAssignee(contact.name || `${contact.firstName || ''} ${contact.lastName || ''}`);
+                    const assigneeName = contact.name || `${ contact.firstName || '' } ${ contact.lastName || '' } `;
+                    let assigneePhone = '';
+
                     if (contact.phoneNumbers && contact.phoneNumbers.length > 0) {
-                        // Simple normalization, remove non-digits
-                        const rawPhone = contact.phoneNumbers[0].number;
-                        // const cleanPhone = rawPhone.replace(/\D/g, ''); 
-                        // Keep format but maybe ensure it has country code if possible. 
-                        // For now just use what we get, user can edit.
-                        setNewTaskPhone(rawPhone);
+                        assigneePhone = contact.phoneNumbers[0].number;
+                    }
+
+                    if (isNew) {
+
+                        const formattedPhone = formatPhoneNumber(assigneePhone);
+                        setNewTaskAssignee(assigneeName);
+                        setNewTaskPhone(formattedPhone);
 
                         // Check conflicts immediately if we have dates
-                        const conflict = checkConflicts(rawPhone, newTaskStartDate, newTaskDuration);
+                        const conflict = checkConflicts(formattedPhone, newTaskStartDate, newTaskDuration);
                         setConflictWarning(conflict ? `Conflict with task "${conflict.title}"` : null);
+                    } else if (selectedTask) {
+                        // Update existing task
+                        const formattedPhone = formatPhoneNumber(assigneePhone);
+                        const updated = { ...selectedTask, assignee: assigneeName, assigneePhone: formattedPhone };
+                        setSelectedTask(updated);
+                        try {
+                            await setDoc(doc(db, "tasks", selectedTask.id), {
+                                assignee: assigneeName,
+                                assigneePhone: formattedPhone
+                            }, { merge: true });
+                        } catch (e) {
+                            console.error("Error updating assignee", e);
+                            alert("Failed to update assignee");
+                        }
                     }
                 }
             } else {
@@ -112,7 +262,6 @@ export default function ProjectDetailScreen({ route, navigation }) {
             }
         } catch (e) {
             console.log(e);
-            // Fallback or error handling
         }
     };
 
@@ -136,9 +285,10 @@ export default function ProjectDetailScreen({ route, navigation }) {
                 duration: newTaskDuration,
                 dependencies: newTaskDependencies,
                 assignee: newTaskAssignee,
-                assigneePhone: newTaskPhone,
+                assigneePhone: formatPhoneNumber(newTaskPhone),
                 status: 'backlog',
                 projectId: projectId,
+                isNew: true,
                 createdAt: new Date()
             });
             setModalVisible(false);
@@ -160,99 +310,124 @@ export default function ProjectDetailScreen({ route, navigation }) {
         setCollapsedSections(prev => ({ ...prev, [section]: !prev[section] }));
     };
 
-    const renderTaskCard = (task) => (
-        <DraxView
-            key={task.id}
-            dragPayload={{ task }}
-            longPressDelay={150}
+    const moveTask = async (task, newStatus) => {
+        if (task.status !== newStatus) {
+            setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: newStatus } : t));
+            try {
+                await setDoc(doc(db, "tasks", task.id), { status: newStatus }, { merge: true });
+            } catch (e) {
+                console.error("Move failed", e);
+            }
+        }
+        setMoveMenuTask(null);
+    };
 
-            renderContent={({ viewState }) => (
-                <View style={{ opacity: viewState && viewState.isDragging ? 0.3 : 1 }}>
-                    <TouchableOpacity onPress={() => setSelectedTask(task)} activeOpacity={0.9}>
-                        <Card style={styles.taskCard}>
-                            <CardHeader style={{ padding: theme.spacing[3], paddingBottom: 0 }}>
-                                <Text weight="medium">{task.title}</Text>
-                            </CardHeader>
-                            <CardContent style={{ padding: theme.spacing[3] }}>
-                                <Text variant="muted" style={{ marginBottom: theme.spacing[1] }} numberOfLines={2}>{task.description}</Text>
-                                <Text variant="small" style={{ fontStyle: 'italic', color: theme.colors.primary.DEFAULT }}>
-                                    {task.assignee ? `Assigned to: ${task.assignee}` : 'Unassigned'}
-                                </Text>
-                                {task.dueDate && (
-                                    <Text variant="small" style={{ color: theme.colors.muted.foreground, marginTop: 4 }}>
-                                        Due: {task.dueDate}
-                                    </Text>
-                                )}
-                            </CardContent>
-                        </Card>
-                    </TouchableOpacity>
-                </View>
-            )}
-            renderHoverContent={() => (
-                <Card style={[styles.taskCard, { width: 280, transform: [{ rotate: '5deg' }], shadowOpacity: 0.2 }]}>
+    const renderTaskCard = (task) => (
+        <View key={task.id}>
+            <TouchableOpacity
+                onPress={async () => {
+                    setSelectedTask(task);
+                    if (task.isNew) {
+                        try {
+                            await setDoc(doc(db, "tasks", task.id), { isNew: false }, { merge: true });
+                        } catch (e) {
+                            console.error("Error updating isNew status", e);
+                        }
+                    }
+                }}
+                onLongPress={() => setMoveMenuTask(task)}
+                activeOpacity={0.9}
+            >
+                <Card style={styles.taskCard}>
                     <CardHeader style={{ padding: theme.spacing[3], paddingBottom: 0 }}>
-                        <Text weight="medium">{task.title}</Text>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 8 }}>
+                                {task.isNew && (
+                                    <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#38bdf8', marginRight: 8, flexShrink: 0 }} />
+                                )}
+                                <Text weight="medium" numberOfLines={1} style={{ flexShrink: 1 }}>{task.title}</Text>
+                            </View>
+                            <TouchableOpacity onPress={() => setMoveMenuTask(task)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                                <Feather name="move" size={14} color={theme.colors.muted.foreground} />
+                            </TouchableOpacity>
+                        </View>
                     </CardHeader>
                     <CardContent style={{ padding: theme.spacing[3] }}>
-                        <Text variant="muted">Dragging...</Text>
+                        <Text variant="muted" style={{ marginBottom: theme.spacing[1] }} numberOfLines={2}>{task.description}</Text>
+                        <Text variant="small" style={{ fontStyle: 'italic', color: theme.colors.primary.DEFAULT }}>
+                            {task.assignee ? `Assigned to: ${ task.assignee } ` : 'Unassigned'}
+                        </Text>
+                        {task.dueDate && (
+                            <Text variant="small" style={{ color: theme.colors.muted.foreground, marginTop: 4 }}>
+                                Due: {task.dueDate}
+                            </Text>
+                        )}
                     </CardContent>
                 </Card>
-            )}
-        />
+            </TouchableOpacity>
+        </View>
     );
 
     const renderListRow = (task) => (
-        <DraxView
-            key={task.id}
-            dragPayload={{ task }}
-            longPressDelay={150}
-            renderContent={({ viewState }) => (
-                <View style={{ opacity: viewState && viewState.isDragging ? 0.3 : 1 }}>
-                    <TouchableOpacity onPress={() => setSelectedTask(task)} activeOpacity={0.9}>
-                        <Card style={styles.listCard}>
-                            <View style={{ flex: 1 }}>
-                                <Text weight="medium">{task.title}</Text>
-                                <Text variant="muted" style={{ fontSize: 13, marginTop: 4 }} numberOfLines={1}>{task.description}</Text>
-                            </View>
-                            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                                <View style={styles.miniBadge}>
-                                    <Text variant="small" style={{ fontSize: 10, color: theme.colors.primary.DEFAULT }}>
-                                        {task.assignee || 'Unassigned'}
-                                    </Text>
-                                </View>
-                                <TouchableOpacity style={{ marginLeft: theme.spacing[3] }}>
-                                    <Feather name="more-horizontal" size={16} color={theme.colors.muted.foreground} />
-                                </TouchableOpacity>
-                            </View>
-                        </Card>
-                    </TouchableOpacity>
-                </View>
-            )}
-            renderHoverContent={() => (
-                <Card style={[styles.listCard, { width: Dimensions.get('window').width - 40, transform: [{ rotate: '2deg' }], shadowOpacity: 0.1 }]}>
+        <View key={task.id}>
+            <TouchableOpacity
+                onPress={async () => {
+                    setSelectedTask(task);
+                    if (task.isNew) {
+                        try {
+                            await setDoc(doc(db, "tasks", task.id), { isNew: false }, { merge: true });
+                        } catch (e) {
+                            console.error("Error updating isNew status", e);
+                        }
+                    }
+                }}
+                onLongPress={() => setMoveMenuTask(task)}
+                activeOpacity={0.9}
+            >
+                <Card style={styles.listCard}>
                     <View style={{ flex: 1 }}>
-                        <Text weight="medium">{task.title}</Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 8 }}>
+                            {task.isNew && (
+                                <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#38bdf8', marginRight: 8, flexShrink: 0 }} />
+                            )}
+                            <Text weight="medium" numberOfLines={1} style={{ flexShrink: 1 }}>{task.title}</Text>
+                        </View>
+                        <Text variant="muted" style={{ fontSize: 13, marginTop: 4 }} numberOfLines={1}>{task.description}</Text>
+                        {task.dueDate && (
+                            <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: theme.spacing[2] }}>
+                                <Feather name="calendar" size={12} color={theme.colors.muted.foreground} style={{ marginRight: 4 }} />
+                                <Text variant="small" style={{ fontSize: 11, color: theme.colors.muted.foreground }}>
+                                    {formatDate(task.dueDate)}
+                                </Text>
+                            </View>
+                        )}
+                    </View>
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        <View style={styles.miniBadge}>
+                            <Text variant="small" style={{ fontSize: 10, color: theme.colors.primary.DEFAULT }}>
+                                {task.assignee || 'Unassigned'}
+                            </Text>
+                        </View>
+                        <TouchableOpacity style={{ marginLeft: theme.spacing[3] }} onPress={() => setMoveMenuTask(task)}>
+                            <Feather name="move" size={16} color={theme.colors.muted.foreground} />
+                        </TouchableOpacity>
                     </View>
                 </Card>
-            )}
-        />
+            </TouchableOpacity>
+        </View>
     );
 
     const renderListSection = (title, data, sectionKey) => {
         const isCollapsed = collapsedSections[sectionKey];
         return (
-            <DraxView
-                style={styles.listSection}
-                receivingStyle={[styles.listSection, { borderColor: theme.colors.primary.DEFAULT, borderWidth: 2, borderRadius: theme.radius.lg, padding: 4 }]}
-                onReceiveDragDrop={(event) => handleTaskDrop(event, sectionKey)}
-            >
+            <View key={sectionKey} style={styles.listSection}>
                 <TouchableOpacity onPress={() => toggleSection(sectionKey)} style={styles.listSectionHeader}>
                     <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                         <Feather name={isCollapsed ? "chevron-right" : "chevron-down"} size={18} color={theme.colors.foreground} style={{ marginRight: theme.spacing[2] }} />
                         <Text variant="h4" style={{ fontSize: 18 }}>{title}</Text>
                     </View>
-                    <View style={styles.countBadge}>
-                        <Text variant="small" weight="bold" style={{ color: theme.colors.muted.foreground }}>{data.length}</Text>
+                    <View style={[styles.badge, { backgroundColor: theme.colors.gray[400] }]}>
+                        <Text variant="small" style={{ color: theme.colors.white }}>{data.length}</Text>
                     </View>
                 </TouchableOpacity>
                 {!isCollapsed && (
@@ -260,44 +435,26 @@ export default function ProjectDetailScreen({ route, navigation }) {
                         {data.map(renderListRow)}
                         {data.length === 0 && (
                             <View style={{ padding: theme.spacing[4], alignItems: 'center' }}>
-                                <Text variant="small" style={{ fontStyle: 'italic', color: theme.colors.muted.foreground }}>Drop tasks here</Text>
+                                <Text variant="small" style={{ fontStyle: 'italic', color: theme.colors.muted.foreground }}>No tasks</Text>
                             </View>
                         )}
                     </View>
                 )}
-            </DraxView>
+            </View>
         );
     };
 
-    const handleTaskDrop = async (event, newStatus) => {
-        const { task } = event.dragged.payload;
-        if (task.status !== newStatus) {
-            // Optimistic Update
-            setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: newStatus } : t));
-
-            try {
-                await setDoc(doc(db, "tasks", task.id), { status: newStatus }, { merge: true });
-            } catch (e) {
-                console.error("Drop update failed", e);
-            }
-        }
-    };
-
     const renderColumn = (title, columnTasks, statusId, badgeColor = theme.colors.gray[400]) => (
-        <DraxView
-            style={styles.column}
-            receivingStyle={[styles.column, { borderColor: theme.colors.primary.DEFAULT, borderWidth: 2 }]}
-            onReceiveDragDrop={(event) => handleTaskDrop(event, statusId)}
-        >
+        <View style={styles.column}>
             <View style={styles.columnHeader}>
                 <Text variant="large" weight="bold">{title}</Text>
                 <View style={[styles.badge, { backgroundColor: badgeColor }]}><Text variant="small" style={{ color: theme.colors.white }}>{columnTasks.length}</Text></View>
             </View>
-            <ScrollView style={styles.columnScroll} showsVerticalScrollIndicator={false}>
+            <View>
                 {columnTasks.map(renderTaskCard)}
-                <View style={{ height: 100 }} />
-            </ScrollView>
-        </DraxView>
+                <View style={{ height: 20 }} />
+            </View>
+        </View>
     );
 
     const backlogTasks = tasks.filter(t => t.status === 'backlog');
@@ -305,53 +462,179 @@ export default function ProjectDetailScreen({ route, navigation }) {
     const doneTasks = tasks.filter(t => t.status === 'done');
 
     return (
-        <DraxProvider>
-            <SafeAreaView style={styles.container}>
-                <View style={styles.header}>
-                    <View style={styles.headerTopRow}>
+        <SafeAreaView edges={['top', 'left', 'right']} style={{ flex: 1, backgroundColor: theme.colors.white, paddingTop: Platform.OS === 'android' ? 16 : 0 }}>
+            <View style={[styles.container, { marginBottom: Platform.OS === 'android' ? 16 : 0 }]}>
+                <View style={styles.newHeader}>
+                    {/* Row 1: Navigation */}
+                    <View style={styles.newHeaderTopRow}>
                         <TouchableOpacity
+                            style={styles.backButtonRow}
                             onPress={() => navigation.goBack()}
-                            style={styles.backButton}
                         >
-                            <Feather name="arrow-left" size={24} color={theme.colors.foreground} />
+                            <Feather name="chevron-left" size={24} color={theme.colors.foreground} />
+                            <Text style={styles.backButtonText}>Home</Text>
                         </TouchableOpacity>
-                        <View>
-                            <Text variant="h3">{projectName}</Text>
-                            <Text variant="muted">Project Board</Text>
-                        </View>
-                    </View>
 
-                    <View style={styles.controlsRow}>
-                        <View style={styles.viewToggle}>
+                        <View style={styles.headerRightActions}>
+                            {/* Avatar Placeholder */}
+                            <View style={styles.avatarPlaceholder}>
+                                <Text style={{ fontSize: 10, fontWeight: 'bold', color: theme.colors.primary.foreground }}>
+                                    {(projectNameState || 'U').charAt(0).toUpperCase()}
+                                </Text>
+                            </View>
+                            {/* Plus Button Placeholder */}
+                            <TouchableOpacity style={styles.roundButton}>
+                                <Feather name="plus" size={16} color={theme.colors.foreground} />
+                            </TouchableOpacity>
+                            {/* Options Menu */}
                             <TouchableOpacity
-                                style={[styles.toggleBtn, viewMode === 'board' && styles.toggleBtnActive]}
+                                style={styles.roundButton}
+                                onPress={() => setHeaderMenuVisible(true)}
+                            >
+                                <Feather name="more-horizontal" size={20} color={theme.colors.foreground} />
+                            </TouchableOpacity>
+                        </View>
+                    </View >
+
+                    {/* Row 2: Project Info */}
+                    < View style={styles.newHeaderProjectRow} >
+                        <View style={styles.projectIconContainer}>
+                            <Feather name={projectIcon} size={24} color={theme.colors.primary.DEFAULT} />
+                        </View>
+
+                        <Text variant="h2" style={styles.projectTitleText}>{projectNameState}</Text>
+                    </View >
+
+                    {/* Row 3: View Toggles (Restored) */}
+                    < View style={styles.viewToggleRow} >
+                        <View style={styles.viewToggleContainer}>
+                            <TouchableOpacity
+                                style={[styles.viewToggleBtn, viewMode === 'board' && styles.viewToggleBtnActive]}
                                 onPress={() => setViewMode('board')}
                             >
-                                <Feather name="columns" size={16} color={viewMode === 'board' ? theme.colors.primary.foreground : theme.colors.foreground} />
-                                <Text style={[styles.toggleText, viewMode === 'board' && styles.toggleTextActive]}>Board</Text>
+                                <Feather name="columns" size={14} color={viewMode === 'board' ? theme.colors.primary.DEFAULT : theme.colors.muted.foreground} />
+                                <Text style={[styles.viewToggleText, viewMode === 'board' && styles.viewToggleTextActive]}>Board</Text>
                             </TouchableOpacity>
                             <TouchableOpacity
-                                style={[styles.toggleBtn, viewMode === 'list' && styles.toggleBtnActive]}
+                                style={[styles.viewToggleBtn, viewMode === 'list' && styles.viewToggleBtnActive]}
                                 onPress={() => setViewMode('list')}
                             >
-                                <Feather name="list" size={16} color={viewMode === 'list' ? theme.colors.primary.foreground : theme.colors.foreground} />
-                                <Text style={[styles.toggleText, viewMode === 'list' && styles.toggleTextActive]}>List</Text>
+                                <Feather name="list" size={14} color={viewMode === 'list' ? theme.colors.primary.DEFAULT : theme.colors.muted.foreground} />
+                                <Text style={[styles.viewToggleText, viewMode === 'list' && styles.viewToggleTextActive]}>List</Text>
                             </TouchableOpacity>
                         </View>
-                        {/* Header Actions removed */}
-                    </View>
-                </View>
+                    </View >
+
+                    {/* Header Menu Modal */}
+                    < Modal
+                        animationType="fade"
+                        transparent={true}
+                        visible={headerMenuVisible}
+                        onRequestClose={() => setHeaderMenuVisible(false)
+                        }
+                    >
+                        <TouchableOpacity
+                            style={styles.modalOverlay}
+                            activeOpacity={1}
+                            onPress={() => setHeaderMenuVisible(false)}
+                        >
+                            <View style={styles.headerMenuDropdown}>
+                                <TouchableOpacity
+                                    style={styles.headerMenuItem}
+                                    onPress={() => {
+                                        setHeaderMenuVisible(false);
+                                        navigation.navigate('ProjectSettings', { projectId });
+                                    }}
+                                >
+                                    <Feather name="settings" size={16} color={theme.colors.foreground} style={{ marginRight: 8 }} />
+                                    <Text>Project Settings</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                    style={styles.headerMenuItem}
+                                    onPress={() => {
+                                        setHeaderMenuVisible(false);
+                                        setAiLogVisible(true);
+                                    }}
+                                >
+                                    <Feather name="terminal" size={16} color={theme.colors.foreground} style={{ marginRight: 8 }} />
+                                    <Text>View AI Logs</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                    style={styles.headerMenuItem}
+                                    onPress={() => {
+                                        setHeaderMenuVisible(false);
+                                        setDeleteModalVisible(true);
+                                    }}
+                                >
+                                    <Feather name="trash-2" size={16} color={theme.colors.destructive.DEFAULT} style={{ marginRight: 8 }} />
+                                    <Text style={{ color: theme.colors.destructive.DEFAULT }}>Delete project</Text>
+                                </TouchableOpacity>
+                            </View>
+                        </TouchableOpacity>
+                    </Modal >
+
+                    {/* Delete Confirmation Modal */}
+                    < Modal
+                        animationType="fade"
+                        transparent={true}
+                        visible={deleteModalVisible}
+                        onRequestClose={() => setDeleteModalVisible(false)}
+                    >
+                        <View style={styles.modalOverlay}>
+                            <Card style={styles.deleteConfirmCard}>
+                                <CardHeader>
+                                    <CardTitle style={{ color: theme.colors.destructive.DEFAULT }}>Delete Project?</CardTitle>
+                                    <CardDescription>This action cannot be undone. Are you sure you want to delete "{projectName}"?</CardDescription>
+                                </CardHeader>
+                                <View style={styles.modalButtons}>
+                                    <Button
+                                        variant="outline"
+                                        onPress={() => setDeleteModalVisible(false)}
+                                        style={{ flex: 1, marginRight: 8 }}
+                                    >
+                                        Cancel
+                                    </Button>
+                                    <Button
+                                        onPress={handleDeleteProject}
+                                        style={{ flex: 1, marginLeft: 8, backgroundColor: theme.colors.destructive.DEFAULT }}
+                                    >
+                                        Delete
+                                    </Button>
+                                </View>
+                            </Card>
+                        </View>
+                    </Modal >
+
+                    {/* AI Log Viewer Modal */}
+                    <Modal
+                        animationType="slide"
+                        transparent={true}
+                        visible={aiLogVisible}
+                        onRequestClose={() => setAiLogVisible(false)}
+                    >
+                        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' }}>
+                            <View style={{ height: '80%', width: '100%' }}>
+                                <AILogViewer projectId={projectId} onClose={() => setAiLogVisible(false)} />
+                            </View>
+                        </View>
+                    </Modal>
+
+
+
+                </View >
 
                 {viewMode === 'board' ? (
-                    <ScrollView
-                        style={styles.board}
-                        horizontal={true}
-                        showsHorizontalScrollIndicator={false}
-                        contentContainerStyle={styles.boardContent}
-                    >
-                        {renderColumn('Backlog', backlogTasks, 'backlog', theme.colors.gray[400])}
-                        {renderColumn('In Progress', inProgressTasks, 'in-progress', theme.colors.primary.DEFAULT)}
-                        {renderColumn('Done', doneTasks, 'done', theme.colors.gray[600])}
+                    <ScrollView style={{ flex: 1 }} contentContainerStyle={{ flexGrow: 1 }}>
+                        <ScrollView
+                            style={styles.board}
+                            horizontal={true}
+                            showsHorizontalScrollIndicator={false}
+                            contentContainerStyle={styles.boardContent}
+                        >
+                            {renderColumn('Backlog', backlogTasks, 'backlog', theme.colors.gray[400])}
+                            {renderColumn('In Progress', inProgressTasks, 'in-progress', theme.colors.gray[400])}
+                            {renderColumn('Done', doneTasks, 'done', theme.colors.gray[400])}
+                        </ScrollView>
                     </ScrollView>
                 ) : (
                     <ScrollView style={styles.listContainer} contentContainerStyle={{ padding: theme.spacing[4], paddingBottom: theme.spacing[24] }}>
@@ -411,7 +694,7 @@ export default function ProjectDetailScreen({ route, navigation }) {
                 >
                     <View style={styles.modalOverlay}>
                         <Card style={styles.modalView}>
-                            <CardHeader>
+                            <CardHeader style={{ paddingTop: theme.spacing[8] }}>
                                 <CardTitle>New Task</CardTitle>
                                 <CardDescription>Create a new task for this project.</CardDescription>
                             </CardHeader>
@@ -470,7 +753,7 @@ export default function ProjectDetailScreen({ route, navigation }) {
                                 </View>
                                 <Button
                                     variant="outline"
-                                    onPress={handlePickContact}
+                                    onPress={() => handlePickContact(true)}
                                     style={{ marginTop: 8, marginBottom: 8, borderColor: theme.colors.primary.DEFAULT }}
                                 >
                                     <Feather name="user-plus" size={16} color={theme.colors.primary.DEFAULT} style={{ marginRight: 8 }} />
@@ -565,153 +848,207 @@ export default function ProjectDetailScreen({ route, navigation }) {
                 </Modal>
 
                 {/* Task Detail Bottom Sheet */}
-                <Modal
-                    animationType="slide"
-                    transparent={true}
+                <BottomSheet
                     visible={!!selectedTask}
-                    onRequestClose={() => setSelectedTask(null)}
+                    onClose={() => setSelectedTask(null)}
+                    style={{ height: '92%' }}
                 >
-                    <TouchableOpacity
-                        style={styles.sheetOverlay}
-                        activeOpacity={1}
-                        onPress={() => setSelectedTask(null)}
-                    >
-                        <TouchableOpacity activeOpacity={1} style={styles.sheetContent}>
-                            {selectedTask && (
-                                <View style={{ flex: 1 }}>
-                                    {/* Asana-style Handle */}
-                                    <View style={styles.sheetHandle} />
+                    {selectedTask && (
+                        <View style={{ flex: 1 }}>
+                            {/* Action Header */}
+                            <View style={styles.asanaHeader}>
+                                <TouchableOpacity
+                                    style={[
+                                        styles.completeButton,
+                                        selectedTask.status === 'done' && styles.completeButtonActive
+                                    ]}
+                                    onPress={async () => {
+                                        const newStatus = selectedTask.status === 'done' ? 'in-progress' : 'done';
+                                        // Optimistic Update
+                                        const updated = { ...selectedTask, status: newStatus };
+                                        setSelectedTask(updated);
+                                        try {
+                                            await setDoc(doc(db, "tasks", selectedTask.id), { status: newStatus }, { merge: true });
+                                        } catch (e) {
+                                            console.error("Error updating status", e);
+                                        }
+                                    }}
+                                >
+                                    <Feather
+                                        name="check"
+                                        size={16}
+                                        color={selectedTask.status === 'done' ? theme.colors.white : theme.colors.emerald[600]}
+                                        style={{ marginRight: theme.spacing[2] }}
+                                    />
+                                    <Text weight="medium" style={{
+                                        color: selectedTask.status === 'done' ? theme.colors.white : theme.colors.emerald[600],
+                                        fontSize: 13
+                                    }}>
+                                        {selectedTask.status === 'done' ? 'Completed' : 'Mark Complete'}
+                                    </Text>
+                                </TouchableOpacity>
 
-                                    {/* Action Header */}
-                                    <View style={styles.asanaHeader}>
+                                <View style={styles.headerIcons}>
+                                    <TouchableOpacity style={styles.iconButton}>
+                                        <Feather name="paperclip" size={20} color={theme.colors.muted.foreground} />
+                                    </TouchableOpacity>
+                                    <TouchableOpacity style={styles.iconButton}>
+                                        <Feather name="thumbs-up" size={20} color={theme.colors.muted.foreground} />
+                                    </TouchableOpacity>
+                                    <TouchableOpacity style={styles.iconButton} onPress={() => setSelectedTask(null)}>
+                                        <Feather name="x" size={20} color={theme.colors.foreground} />
+                                    </TouchableOpacity>
+                                </View>
+                            </View>
+
+                            <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+                                {/* Title */}
+                                <TextInput
+                                    style={styles.asanaTitleInput}
+                                    value={selectedTask.title}
+                                    multiline
+                                    onChangeText={(text) => setSelectedTask({ ...selectedTask, title: text })}
+                                    onEndEditing={async () => {
+                                        // Auto-save title
+                                        try {
+                                            await setDoc(doc(db, "tasks", selectedTask.id), { title: selectedTask.title }, { merge: true });
+                                        } catch (e) { }
+                                    }}
+                                />
+
+                                {/* Meta Fields */}
+                                <View style={styles.metaContainer}>
+                                    <View style={styles.metaRow}>
+                                        <Text style={styles.metaLabel}>Assignee</Text>
                                         <TouchableOpacity
-                                            style={[
-                                                styles.completeButton,
-                                                selectedTask.status === 'done' && styles.completeButtonActive
-                                            ]}
-                                            onPress={async () => {
-                                                const newStatus = selectedTask.status === 'done' ? 'in-progress' : 'done';
-                                                // Optimistic Update
-                                                const updated = { ...selectedTask, status: newStatus };
-                                                setSelectedTask(updated);
-                                                try {
-                                                    await setDoc(doc(db, "tasks", selectedTask.id), { status: newStatus }, { merge: true });
-                                                } catch (e) {
-                                                    console.error("Error updating status", e);
-                                                }
-                                            }}
+                                            style={styles.metaValueContainer}
+                                            onPress={() => handlePickContact(false)}
                                         >
-                                            <Feather
-                                                name="check"
-                                                size={16}
-                                                color={selectedTask.status === 'done' ? theme.colors.white : theme.colors.emerald[600]}
-                                                style={{ marginRight: theme.spacing[2] }}
-                                            />
-                                            <Text weight="medium" style={{
-                                                color: selectedTask.status === 'done' ? theme.colors.white : theme.colors.emerald[600],
-                                                fontSize: 13
-                                            }}>
-                                                {selectedTask.status === 'done' ? 'Completed' : 'Mark Complete'}
-                                            </Text>
+                                            <View style={styles.assigneeAvatar}>
+                                                <Text style={{ color: theme.colors.white, fontSize: 10, fontWeight: 'bold' }}>
+                                                    {(selectedTask.assignee || 'U').charAt(0).toUpperCase()}
+                                                </Text>
+                                            </View>
+                                            <Text style={styles.metaValueText}>{selectedTask.assignee || 'Unassigned'}</Text>
+                                            <Feather name="chevron-down" size={14} color={theme.colors.muted.foreground} style={{ marginLeft: 6 }} />
                                         </TouchableOpacity>
+                                    </View>
 
-                                        <View style={styles.headerIcons}>
-                                            <TouchableOpacity style={styles.iconButton}>
-                                                <Feather name="paperclip" size={20} color={theme.colors.muted.foreground} />
-                                            </TouchableOpacity>
-                                            <TouchableOpacity style={styles.iconButton}>
-                                                <Feather name="thumbs-up" size={20} color={theme.colors.muted.foreground} />
-                                            </TouchableOpacity>
-                                            <TouchableOpacity style={styles.iconButton} onPress={() => setSelectedTask(null)}>
-                                                <Feather name="x" size={20} color={theme.colors.foreground} />
-                                            </TouchableOpacity>
+                                    <View style={styles.metaRow}>
+                                        <Text style={styles.metaLabel}>Start date</Text>
+                                        <View style={styles.metaValueContainer}>
+                                            <View style={styles.detailRow}>
+                                                <Feather name="calendar" size={18} color={theme.colors.muted.foreground} />
+                                                <View style={{ marginLeft: theme.spacing[3] }}>
+                                                    <Text variant="small" style={{ color: theme.colors.muted.foreground }}>Start Date</Text>
+                                                    <Text>{selectedTask.startDate ? formatDate(selectedTask.startDate) : 'Not set'}</Text>
+                                                </View>
+                                            </View>
                                         </View>
                                     </View>
 
-                                    <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
-                                        {/* Title */}
-                                        <TextInput
-                                            style={styles.asanaTitleInput}
-                                            value={selectedTask.title}
-                                            multiline
-                                            onChangeText={(text) => setSelectedTask({ ...selectedTask, title: text })}
-                                            onEndEditing={async () => {
-                                                // Auto-save title
-                                                try {
-                                                    await setDoc(doc(db, "tasks", selectedTask.id), { title: selectedTask.title }, { merge: true });
-                                                } catch (e) { }
-                                            }}
-                                        />
-
-                                        {/* Meta Fields */}
-                                        <View style={styles.metaContainer}>
-                                            <View style={styles.metaRow}>
-                                                <Text style={styles.metaLabel}>Assignee</Text>
-                                                <View style={styles.metaValueContainer}>
-                                                    <View style={styles.assigneeAvatar}>
-                                                        <Text style={{ color: theme.colors.white, fontSize: 10, fontWeight: 'bold' }}>
-                                                            {(selectedTask.assignee || 'U').charAt(0).toUpperCase()}
-                                                        </Text>
-                                                    </View>
-                                                    <Text style={styles.metaValueText}>{selectedTask.assignee || 'Unassigned'}</Text>
+                                    <View style={styles.metaRow}>
+                                        <Text style={styles.metaLabel}>Due date</Text>
+                                        <View style={styles.metaValueContainer}>
+                                            <View style={styles.detailRow}>
+                                                <Feather name="flag" size={18} color={theme.colors.muted.foreground} />
+                                                <View style={{ marginLeft: theme.spacing[3] }}>
+                                                    <Text variant="small" style={{ color: theme.colors.muted.foreground }}>Due Date</Text>
+                                                    <Text>{selectedTask.dueDate ? formatDate(selectedTask.dueDate) : 'Not set'}</Text>
                                                 </View>
                                             </View>
+                                            {selectedTask.status === 'done' && (
+                                                <Text style={{ marginLeft: theme.spacing[3], color: theme.colors.emerald[600], fontSize: 13 }}>Done</Text>
+                                            )}
+                                        </View>
+                                    </View>
 
-                                            <View style={styles.metaRow}>
-                                                <Text style={styles.metaLabel}>Due date</Text>
-                                                <View style={styles.metaValueContainer}>
-                                                    <TouchableOpacity style={styles.dateBadge}>
-                                                        <Feather name="calendar" size={14} color={theme.colors.muted.foreground} style={{ marginRight: 6 }} />
-                                                        <Text style={styles.metaValueText}>{selectedTask.dueDate || 'No due date'}</Text>
-                                                    </TouchableOpacity>
-                                                    {selectedTask.status === 'done' && (
-                                                        <Text style={{ marginLeft: theme.spacing[3], color: theme.colors.emerald[600], fontSize: 13 }}>Done</Text>
-                                                    )}
-                                                </View>
-                                            </View>
-
-                                            <View style={styles.metaRow}>
-                                                <Text style={styles.metaLabel}>Projects</Text>
-                                                <View style={styles.metaValueContainer}>
-                                                    <View style={styles.projectBadge}>
-                                                        <Text style={{ fontSize: 12, fontWeight: '600', color: theme.colors.primary.DEFAULT }}>{projectName}</Text>
-                                                    </View>
-                                                </View>
+                                    <View style={styles.metaRow}>
+                                        <Text style={styles.metaLabel}>Projects</Text>
+                                        <View style={styles.metaValueContainer}>
+                                            <View style={styles.projectBadge}>
+                                                <Text style={{ fontSize: 12, fontWeight: '600', color: theme.colors.primary.DEFAULT }}>{projectName}</Text>
                                             </View>
                                         </View>
-
-                                        {/* Description */}
-                                        <View style={styles.descriptionContainer}>
-                                            <Text weight="medium" style={{ marginBottom: theme.spacing[2], fontSize: 14 }}>Description</Text>
-                                            <TextInput
-                                                style={styles.descriptionInput}
-                                                value={selectedTask.description}
-                                                multiline
-                                                placeholder="What is this task about?"
-                                                placeholderTextColor={theme.colors.muted.foreground}
-                                                onChangeText={(text) => setSelectedTask({ ...selectedTask, description: text })}
-                                                onEndEditing={async () => {
-                                                    try {
-                                                        await setDoc(doc(db, "tasks", selectedTask.id), { description: selectedTask.description }, { merge: true });
-                                                    } catch (e) { }
-                                                }}
-                                            />
-                                        </View>
-
-                                        {/* Fake Comment Box */}
-                                        <View style={styles.commentSection}>
-                                            <View style={styles.commentAvatar} />
-                                            <Text style={{ color: theme.colors.muted.foreground, marginLeft: theme.spacing[3] }}>Ask a question or post an update...</Text>
-                                        </View>
-
-                                    </ScrollView>
+                                    </View>
                                 </View>
+
+                                {/* Description */}
+                                <View style={styles.descriptionContainer}>
+                                    <Text weight="medium" style={{ marginBottom: theme.spacing[2], fontSize: 14 }}>Description</Text>
+                                    <TextInput
+                                        style={styles.descriptionInput}
+                                        value={selectedTask.description}
+                                        multiline
+                                        placeholder="What is this task about?"
+                                        placeholderTextColor={theme.colors.muted.foreground}
+                                        onChangeText={(text) => setSelectedTask({ ...selectedTask, description: text })}
+                                        onEndEditing={async () => {
+                                            try {
+                                                await setDoc(doc(db, "tasks", selectedTask.id), { description: selectedTask.description }, { merge: true });
+                                            } catch (e) { }
+                                        }}
+                                    />
+                                </View>
+
+                                {/* Fake Comment Box */}
+                                <View style={styles.commentSection}>
+                                    <View style={styles.commentAvatar} />
+                                    <Text style={{ color: theme.colors.muted.foreground, marginLeft: theme.spacing[3] }}>Ask a question or post an update...</Text>
+                                </View>
+
+                            </ScrollView>
+                        </View>
+                    )}
+                </BottomSheet>
+                {/* Move Task Menu */}
+                <Modal
+                    animationType="fade"
+                    transparent={true}
+                    visible={!!moveMenuTask}
+                    onRequestClose={() => setMoveMenuTask(null)}
+                >
+                    <TouchableOpacity
+                        style={styles.modalOverlay}
+                        activeOpacity={1}
+                        onPress={() => setMoveMenuTask(null)}
+                    >
+                        <Card style={{ width: 280, padding: 0 }}>
+                            <View style={{ padding: theme.spacing[4], borderBottomWidth: 1, borderBottomColor: theme.colors.gray[100] }}>
+                                <Text weight="medium">Move to...</Text>
+                            </View>
+                            {moveMenuTask?.status !== 'backlog' && (
+                                <TouchableOpacity
+                                    style={styles.moveMenuItem}
+                                    onPress={() => moveTask(moveMenuTask, 'backlog')}
+                                >
+                                    <View style={[styles.statusDot, { backgroundColor: theme.colors.gray[400] }]} />
+                                    <Text>Backlog</Text>
+                                </TouchableOpacity>
                             )}
-                        </TouchableOpacity>
+                            {moveMenuTask?.status !== 'in-progress' && (
+                                <TouchableOpacity
+                                    style={styles.moveMenuItem}
+                                    onPress={() => moveTask(moveMenuTask, 'in-progress')}
+                                >
+                                    <View style={[styles.statusDot, { backgroundColor: theme.colors.primary.DEFAULT }]} />
+                                    <Text>In Progress</Text>
+                                </TouchableOpacity>
+                            )}
+                            {moveMenuTask?.status !== 'done' && (
+                                <TouchableOpacity
+                                    style={styles.moveMenuItem}
+                                    onPress={() => moveTask(moveMenuTask, 'done')}
+                                >
+                                    <View style={[styles.statusDot, { backgroundColor: theme.colors.emerald?.[600] || '#059669' }]} />
+                                    <Text>Done</Text>
+                                </TouchableOpacity>
+                            )}
+                        </Card>
                     </TouchableOpacity>
                 </Modal>
-            </SafeAreaView>
-        </DraxProvider >
+            </View>
+        </SafeAreaView>
     );
 }
 
@@ -787,7 +1124,6 @@ const styles = StyleSheet.create({
         backgroundColor: theme.colors.gray[100],
         marginRight: theme.spacing[4],
         borderRadius: theme.radius.lg,
-        maxHeight: '100%',
         padding: theme.spacing[2],
     },
     columnHeader: {
@@ -923,26 +1259,15 @@ const styles = StyleSheet.create({
     },
 
     // Sheet Styles
+    // Styles moved to BottomSheet component
     sheetOverlay: {
-        flex: 1,
-        backgroundColor: 'rgba(0,0,0,0.5)',
-        justifyContent: 'flex-end',
+        // Obsolete
     },
     sheetContent: {
-        backgroundColor: theme.colors.white,
-        borderTopLeftRadius: theme.radius.xl,
-        borderTopRightRadius: theme.radius.xl,
-        padding: theme.spacing[6],
-        paddingBottom: theme.spacing[10],
-        height: '92%',
+        // Obsolete
     },
     sheetHandle: {
-        width: 40,
-        height: 4,
-        backgroundColor: theme.colors.gray[300],
-        borderRadius: theme.radius.full,
-        alignSelf: 'center',
-        marginBottom: theme.spacing[4],
+        // Obsolete
     },
 
     // Asana Styles
@@ -1049,5 +1374,184 @@ const styles = StyleSheet.create({
         height: 32,
         borderRadius: theme.radius.full,
         backgroundColor: theme.colors.gray[300],
+    },
+    moveMenuItem: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        padding: theme.spacing[4],
+        borderBottomWidth: 1,
+        borderBottomColor: theme.colors.gray[100],
+    },
+    statusDot: {
+        width: 10,
+        height: 10,
+        borderRadius: 5,
+        marginRight: theme.spacing[3],
+    },
+
+    // New Header Styles
+    newHeader: {
+        backgroundColor: theme.colors.white,
+        paddingTop: theme.spacing[2],
+        paddingBottom: theme.spacing[4],
+        paddingHorizontal: theme.spacing[4],
+        borderBottomWidth: 1,
+        borderBottomColor: theme.colors.border,
+    },
+    newHeaderTopRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: theme.spacing[6],
+    },
+    backButtonRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    backButtonText: {
+        fontSize: 16,
+        color: theme.colors.foreground,
+        marginLeft: theme.spacing[1],
+    },
+    headerRightActions: {
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    avatarPlaceholder: {
+        width: 28,
+        height: 28,
+        borderRadius: 14,
+        backgroundColor: theme.colors.primary.light,
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginRight: theme.spacing[3],
+    },
+    roundButton: {
+        width: 32,
+        height: 32,
+        borderRadius: 16,
+        justifyContent: 'center',
+        alignItems: 'center',
+        borderWidth: 1,
+        borderColor: theme.colors.gray[200], // light border
+        marginLeft: theme.spacing[2],
+        borderStyle: 'dashed', // visual cue for placeholder "plus" ? Or just solid. User said "placeholder".
+        // Actually for the "plus" it should probably be solid.
+        borderStyle: 'solid',
+    },
+    newHeaderProjectRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    projectIconContainer: {
+        width: 48,
+        height: 48,
+        borderRadius: 24, // Circle
+        backgroundColor: theme.colors.gray[50],
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginRight: theme.spacing[4],
+        // borderWidth: 1, // Removed border
+        // borderColor: theme.colors.gray[200],
+    },
+    projectTitleText: {
+        fontSize: 24, // H1ish
+        fontWeight: 'bold',
+        color: theme.colors.foreground,
+    },
+
+    // View Toogle Tabs (Restored)
+    viewToggleRow: {
+        marginTop: theme.spacing[4],
+        flexDirection: 'row',
+    },
+    viewToggleContainer: {
+        flexDirection: 'row',
+        backgroundColor: theme.colors.gray[100],
+        padding: 4,
+        borderRadius: theme.radius.md,
+    },
+    viewToggleBtn: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingVertical: 6,
+        paddingHorizontal: 12,
+        borderRadius: theme.radius.sm,
+    },
+    viewToggleBtnActive: {
+        backgroundColor: theme.colors.white,
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.1,
+        shadowRadius: 1,
+        elevation: 1,
+    },
+    viewToggleText: {
+        fontSize: 13,
+        fontWeight: '500',
+        color: theme.colors.muted.foreground,
+        marginLeft: 6,
+    },
+    viewToggleTextActive: {
+        color: theme.colors.primary.DEFAULT,
+        fontWeight: '600',
+    },
+
+    // Header Menu
+    headerMenuDropdown: {
+        position: 'absolute',
+        top: 120,
+        right: 20,
+        backgroundColor: theme.colors.white,
+        borderRadius: theme.radius.md,
+        padding: theme.spacing[2],
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.15,
+        shadowRadius: 12,
+        elevation: 10,
+        minWidth: 160,
+    },
+    headerMenuItem: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        padding: theme.spacing[3],
+        borderRadius: theme.radius.sm, // hover effect area
+    },
+
+    // Delete Modal
+    deleteConfirmCard: {
+        width: '100%',
+        maxWidth: 320,
+        backgroundColor: theme.colors.white,
+        padding: theme.spacing[6],
+    },
+
+    // Icon Picker
+    iconPickerCard: {
+        width: '90%',
+        maxWidth: 340,
+        backgroundColor: theme.colors.white,
+        padding: theme.spacing[6],
+    },
+    iconGrid: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 16,
+        justifyContent: 'center',
+    },
+    iconOption: {
+        width: 56,
+        height: 56,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: theme.colors.gray[200],
+        justifyContent: 'center',
+        alignItems: 'center',
+        backgroundColor: theme.colors.gray[50],
+    },
+    iconOptionSelected: {
+        borderColor: theme.colors.primary.DEFAULT,
+        backgroundColor: theme.colors.primary.light,
     }
 });

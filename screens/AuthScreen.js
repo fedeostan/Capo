@@ -13,8 +13,6 @@ export default function AuthScreen({ navigation }) {
     const [isLogin, setIsLogin] = useState(true);
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
-    const [name, setName] = useState('');
-    const [company, setCompany] = useState('');
     const [loading, setLoading] = useState(false);
 
     const handleAuth = async () => {
@@ -28,21 +26,13 @@ export default function AuthScreen({ navigation }) {
             if (isLogin) {
                 await signInWithEmailAndPassword(auth, email, password);
             } else {
-                if (!name || !company) {
-                    Alert.alert('Error', 'Please fill in name and company');
-                    setLoading(false);
-                    return;
-                }
                 const userCredential = await createUserWithEmailAndPassword(auth, email, password);
                 const user = userCredential.user;
 
-                await updateProfile(user, { displayName: name });
-
                 await setDoc(doc(db, "users", user.uid), {
-                    name: name,
-                    company: company,
                     email: email,
-                    role: 'manager'
+                    createdAt: new Date(),
+                    onboardingCompleted: false
                 });
             }
         } catch (error) {
@@ -76,20 +66,7 @@ export default function AuthScreen({ navigation }) {
                             </CardDescription>
                         </CardHeader>
                         <CardContent>
-                            {!isLogin && (
-                                <>
-                                    <Input
-                                        placeholder="Full Name"
-                                        value={name}
-                                        onChangeText={setName}
-                                    />
-                                    <Input
-                                        placeholder="Company Name"
-                                        value={company}
-                                        onChangeText={setCompany}
-                                    />
-                                </>
-                            )}
+
                             <Input
                                 placeholder="name@example.com"
                                 value={email}

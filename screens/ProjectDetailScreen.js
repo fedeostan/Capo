@@ -1,4 +1,3 @@
-```javascript
 import React, { useEffect, useState } from 'react';
 import { View, StyleSheet, ScrollView, TouchableOpacity, Modal, Dimensions, FlatList, TextInput, Platform, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -15,6 +14,7 @@ import * as Contacts from 'expo-contacts';
 import DateTimePicker from '@react-native-community/datetimepicker';
 
 import { BottomSheet } from '../components/ui/BottomSheet';
+import { Header } from '../components/ui/Header';
 import { AILogViewer } from '../components/AILogViewer';
 
 const COLUMN_WIDTH = 300;
@@ -28,12 +28,12 @@ const formatPhoneNumber = (phone) => {
 
     // Check formatting
     if (cleaned.length === 10) {
-        return `+ 1${ cleaned } `;
+        return "+ 1" + cleaned;
     } else if (cleaned.length === 11 && cleaned.startsWith('1')) {
-        return `+ ${ cleaned } `;
+        return "+" + cleaned;
     } else {
         // Fallback: prepend + if not present (best effort for international)
-        return `+ ${ cleaned } `;
+        return "+" + cleaned;
     }
 };
 
@@ -49,14 +49,28 @@ export default function ProjectDetailScreen({ route, navigation }) {
     const [deleteModalVisible, setDeleteModalVisible] = useState(false);
     const [aiLogVisible, setAiLogVisible] = useState(false);
 
+    // New Task State
     const [newTaskTitle, setNewTaskTitle] = useState('');
     const [newTaskDescription, setNewTaskDescription] = useState('');
     const [newTaskDueDate, setNewTaskDueDate] = useState('');
     const [newTaskStartDate, setNewTaskStartDate] = useState('');
     const [newTaskDuration, setNewTaskDuration] = useState('');
-    const [newTaskDependencies, setNewTaskDependencies] = useState([]); // Array of task IDs
+    const [newTaskDependencies, setNewTaskDependencies] = useState([]);
     const [dependencyModalVisible, setDependencyModalVisible] = useState(false);
-    
+    const [newTaskAssignee, setNewTaskAssignee] = useState('');
+    const [newTaskPhone, setNewTaskPhone] = useState('');
+    const [conflictWarning, setConflictWarning] = useState(null);
+    const [showNewTaskStartDatePicker, setShowNewTaskStartDatePicker] = useState(false);
+    const [showNewTaskEndDatePicker, setShowNewTaskEndDatePicker] = useState(false);
+    const [calculatedDurationString, setCalculatedDurationString] = useState('');
+
+    // Detail / View State
+    const [viewMode, setViewMode] = useState('board');
+    const [collapsedSections, setCollapsedSections] = useState({});
+    const [menuVisible, setMenuVisible] = useState(false);
+    const [selectedTask, setSelectedTask] = useState(null);
+    const [moveMenuTask, setMoveMenuTask] = useState(null);
+
     // Date Picker State for Task Details
     const [showStartDatePicker, setShowStartDatePicker] = useState(false);
     const [showDueDatePicker, setShowDueDatePicker] = useState(false);
@@ -65,7 +79,7 @@ export default function ProjectDetailScreen({ route, navigation }) {
         if (Platform.OS === 'android') {
             setShowStartDatePicker(false);
         }
-        
+
         if (selectedDate && selectedTask) {
             // Validation: Start Date cannot be after Due Date (if Due Date is set)
             if (selectedTask.dueDate) {
@@ -75,12 +89,12 @@ export default function ProjectDetailScreen({ route, navigation }) {
                     return;
                 }
             }
-            
+
             // Update local state and Firestore
             const isoDate = selectedDate.toISOString().split('T')[0];
             const updated = { ...selectedTask, startDate: isoDate };
             setSelectedTask(updated);
-            
+
             try {
                 await setDoc(doc(db, "tasks", selectedTask.id), { startDate: isoDate }, { merge: true });
             } catch (e) {
@@ -96,8 +110,8 @@ export default function ProjectDetailScreen({ route, navigation }) {
         }
 
         if (selectedDate && selectedTask) {
-             // Validation: Due Date cannot be before Start Date
-             if (selectedTask.startDate) {
+            // Validation: Due Date cannot be before Start Date
+            if (selectedTask.startDate) {
                 const start = new Date(selectedTask.startDate);
                 if (selectedDate < start) {
                     Alert.alert("Invalid Date", "Due date cannot be before start date.");
@@ -107,7 +121,6 @@ export default function ProjectDetailScreen({ route, navigation }) {
 
             // Update local state and Firestore
             const isoDate = selectedDate.toISOString().split('T')[0];
-            // Also unset 'status: done' if we are changing due date? Maybe not necessarily.
             const updated = { ...selectedTask, dueDate: isoDate };
             setSelectedTask(updated);
 
@@ -119,21 +132,69 @@ export default function ProjectDetailScreen({ route, navigation }) {
             }
         }
     };
-    const [newTaskAssignee, setNewTaskAssignee] = useState('');
-    const [newTaskPhone, setNewTaskPhone] = useState('');
-    const [conflictWarning, setConflictWarning] = useState(null);
-    const [viewMode, setViewMode] = useState('board'); // 'board' | 'list'
-    const [collapsedSections, setCollapsedSections] = useState({});
-    const [menuVisible, setMenuVisible] = useState(false);
-    const [selectedTask, setSelectedTask] = useState(null);
-    const [moveMenuTask, setMoveMenuTask] = useState(null);
 
+    const updateDuration = (start, end) => {
+        if (!start || !end) {
+            setNewTaskDuration('');
+            setCalculatedDurationString('');
+            return;
+        }
+        const startDate = new Date(start);
+        const endDate = new Date(end);
+        const diffTime = endDate - startDate;
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+        if (diffDays < 0) {
+            setNewTaskDuration('');
+            setCalculatedDurationString('Invalid dates');
+            return;
+        }
+
+        setNewTaskDuration(diffDays.toString());
+
+        if (diffDays < 7) {
+            setCalculatedDurationString(`${diffDays} day${diffDays !== 1 ? 's' : ''}`);
+        } else {
+            // Count weeks, allow increments of 0.5
+            // e.g., 7 days = 1 week. 10 days = 1.4 ish. -> 1.5 weeks?
+            // User request: "Or weeks and a half".
+            // Logic: divide by 7, multiply by 2, round, divide by 2.
+            const weeks = Math.round((diffDays / 7) * 2) / 2;
+            setCalculatedDurationString(`${weeks} week${weeks !== 1 ? 's' : ''}`);
+        }
+    };
+
+    const onNewTaskStartDateChange = (event, selectedDate) => {
+        if (Platform.OS === 'android') {
+            setShowNewTaskStartDatePicker(false);
+        }
+        if (selectedDate) {
+            const isoDate = selectedDate.toISOString().split('T')[0];
+            setNewTaskStartDate(isoDate);
+            updateDuration(isoDate, newTaskDueDate);
+            const conflict = checkConflicts(newTaskPhone, isoDate, newTaskDuration);
+            // Note: conflict check uses the OLD duration logic here unless we recalc, 
+            // but since duration state updates async, we might be slightly off in this specific render cycle.
+            // Better to recalc conflict with the new derived duration if needed, but for now this is fine.
+        }
+    };
+
+    const onNewTaskEndDateChange = (event, selectedDate) => {
+        if (Platform.OS === 'android') {
+            setShowNewTaskEndDatePicker(false);
+        }
+        if (selectedDate) {
+            const isoDate = selectedDate.toISOString().split('T')[0];
+            setNewTaskDueDate(isoDate);
+            updateDuration(newTaskStartDate, isoDate);
+        }
+    };
+
+    // DEBUG: Monitor tasks for isNew
     // DEBUG: Monitor tasks for isNew
     useEffect(() => {
         const newTasks = tasks.filter(t => t.isNew);
-        if (newTasks.length > 0) {
-            console.log(`[ProjectDetail] Found ${ newTasks.length } new tasks: `, newTasks.map(t => t.id));
-        }
+        console.log('[ProjectDetail] Found ' + newTasks.length + ' new tasks:', newTasks.map(function (t) { return t.id; }));
     }, [tasks]);
 
     useEffect(() => {
@@ -225,7 +286,9 @@ export default function ProjectDetailScreen({ route, navigation }) {
             if (status === 'granted') {
                 const contact = await Contacts.presentContactPickerAsync();
                 if (contact) {
-                    const assigneeName = contact.name || `${ contact.firstName || '' } ${ contact.lastName || '' } `;
+                    const assigneeFirstName = contact.firstName || '';
+                    const assigneeLastName = contact.lastName || '';
+                    const assigneeName = contact.name || (assigneeFirstName + " " + assigneeLastName).trim();
                     let assigneePhone = '';
 
                     if (contact.phoneNumbers && contact.phoneNumbers.length > 0) {
@@ -343,7 +406,7 @@ export default function ProjectDetailScreen({ route, navigation }) {
                         <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                             <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 8 }}>
                                 {task.isNew && (
-                                    <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#38bdf8', marginRight: 8, flexShrink: 0 }} />
+                                    <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.sky[400], marginRight: 8, flexShrink: 0 }} />
                                 )}
                                 <Text weight="medium" numberOfLines={1} style={{ flexShrink: 1 }}>{task.title}</Text>
                             </View>
@@ -355,11 +418,11 @@ export default function ProjectDetailScreen({ route, navigation }) {
                     <CardContent style={{ padding: theme.spacing[3] }}>
                         <Text variant="muted" style={{ marginBottom: theme.spacing[1] }} numberOfLines={2}>{task.description}</Text>
                         <Text variant="small" style={{ fontStyle: 'italic', color: theme.colors.primary.DEFAULT }}>
-                            {task.assignee ? `Assigned to: ${ task.assignee } ` : 'Unassigned'}
+                            {task.assignee ? `Assigned to: ${task.assignee} ` : 'Unassigned'}
                         </Text>
                         {task.dueDate && (
                             <Text variant="small" style={{ color: theme.colors.muted.foreground, marginTop: 4 }}>
-                                Due: {task.dueDate}
+                                Due: {formatDate(task.dueDate)}
                             </Text>
                         )}
                     </CardContent>
@@ -404,7 +467,7 @@ export default function ProjectDetailScreen({ route, navigation }) {
                     </View>
                     <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                         <View style={styles.miniBadge}>
-                            <Text variant="small" style={{ fontSize: 10, color: theme.colors.primary.DEFAULT }}>
+                            <Text variant="small" style={{ fontSize: theme.typography.sizes.xxs, color: theme.colors.primary.DEFAULT }}>
                                 {task.assignee || 'Unassigned'}
                             </Text>
                         </View>
@@ -464,28 +527,14 @@ export default function ProjectDetailScreen({ route, navigation }) {
     return (
         <SafeAreaView edges={['top', 'left', 'right']} style={{ flex: 1, backgroundColor: theme.colors.white, paddingTop: Platform.OS === 'android' ? 16 : 0 }}>
             <View style={[styles.container, { marginBottom: Platform.OS === 'android' ? 16 : 0 }]}>
-                <View style={styles.newHeader}>
-                    {/* Row 1: Navigation */}
-                    <View style={styles.newHeaderTopRow}>
-                        <TouchableOpacity
-                            style={styles.backButtonRow}
-                            onPress={() => navigation.goBack()}
-                        >
-                            <Feather name="chevron-left" size={24} color={theme.colors.foreground} />
-                            <Text style={styles.backButtonText}>Home</Text>
-                        </TouchableOpacity>
-
+                <Header
+                    style={{ paddingTop: Platform.OS === 'ios' ? 0 : undefined }}
+                    showBack={true}
+                    backText="Home"
+                    onBack={() => navigation.goBack()}
+                    rightAction={
                         <View style={styles.headerRightActions}>
-                            {/* Avatar Placeholder */}
-                            <View style={styles.avatarPlaceholder}>
-                                <Text style={{ fontSize: 10, fontWeight: 'bold', color: theme.colors.primary.foreground }}>
-                                    {(projectNameState || 'U').charAt(0).toUpperCase()}
-                                </Text>
-                            </View>
-                            {/* Plus Button Placeholder */}
-                            <TouchableOpacity style={styles.roundButton}>
-                                <Feather name="plus" size={16} color={theme.colors.foreground} />
-                            </TouchableOpacity>
+
                             {/* Options Menu */}
                             <TouchableOpacity
                                 style={styles.roundButton}
@@ -494,8 +543,9 @@ export default function ProjectDetailScreen({ route, navigation }) {
                                 <Feather name="more-horizontal" size={20} color={theme.colors.foreground} />
                             </TouchableOpacity>
                         </View>
-                    </View >
+                    }
 
+                >
                     {/* Row 2: Project Info */}
                     < View style={styles.newHeaderProjectRow} >
                         <View style={styles.projectIconContainer}>
@@ -618,10 +668,7 @@ export default function ProjectDetailScreen({ route, navigation }) {
                             </View>
                         </View>
                     </Modal>
-
-
-
-                </View >
+                </Header>
 
                 {viewMode === 'board' ? (
                     <ScrollView style={{ flex: 1 }} contentContainerStyle={{ flexGrow: 1 }}>
@@ -686,122 +733,200 @@ export default function ProjectDetailScreen({ route, navigation }) {
                     </TouchableOpacity>
                 </View>
 
-                <Modal
-                    animationType="fade"
-                    transparent={true}
+                <BottomSheet
                     visible={modalVisible}
-                    onRequestClose={() => setModalVisible(false)}
+                    onClose={() => setModalVisible(false)}
+                    style={{ height: '92%' }}
                 >
-                    <View style={styles.modalOverlay}>
-                        <Card style={styles.modalView}>
-                            <CardHeader style={{ paddingTop: theme.spacing[8] }}>
-                                <CardTitle>New Task</CardTitle>
-                                <CardDescription>Create a new task for this project.</CardDescription>
-                            </CardHeader>
-                            <CardContent>
-                                <Input
-                                    placeholder="Task Title"
-                                    value={newTaskTitle}
-                                    onChangeText={setNewTaskTitle}
-                                />
-                                <Input
-                                    placeholder="Description"
-                                    value={newTaskDescription}
-                                    onChangeText={setNewTaskDescription}
-                                    multiline
-                                    numberOfLines={3}
-                                    style={{ height: 80, textAlignVertical: 'top' }}
-                                />
-                                <Input
-                                    placeholder="Due Date (e.g., 2024-12-31)"
-                                    value={newTaskDueDate}
-                                    onChangeText={setNewTaskDueDate}
-                                />
-                                <Input
-                                    placeholder="Assignee Name"
-                                    value={newTaskAssignee}
-                                    onChangeText={setNewTaskAssignee}
-                                />
-                                <Input
-                                    placeholder="Phone (e.g., +1234567890)"
-                                    value={newTaskPhone}
-                                    onChangeText={setNewTaskPhone}
-                                    keyboardType="phone-pad"
-                                />
-                                <View style={{ flexDirection: 'row', gap: 8 }}>
-                                    <Input
-                                        placeholder="Start Date (YYYY-MM-DD)"
-                                        value={newTaskStartDate}
-                                        onChangeText={(text) => {
-                                            setNewTaskStartDate(text);
-                                            const conflict = checkConflicts(newTaskPhone, text, newTaskDuration);
-                                            setConflictWarning(conflict ? `Conflict with "${conflict.title}"` : null);
-                                        }}
-                                        style={{ flex: 1 }}
-                                    />
-                                    <Input
-                                        placeholder="Duration (days)"
-                                        value={newTaskDuration}
-                                        onChangeText={(text) => {
-                                            setNewTaskDuration(text);
-                                            const conflict = checkConflicts(newTaskPhone, newTaskStartDate, text);
-                                            setConflictWarning(conflict ? `Conflict with "${conflict.title}"` : null);
-                                        }}
-                                        keyboardType="numeric"
-                                        style={{ flex: 1 }}
-                                    />
+                    <View style={{ flex: 1 }}>
+                        <View style={styles.asanaHeader}>
+                            <TouchableOpacity
+                                style={[
+                                    styles.completeButton,
+                                    { borderColor: theme.colors.primary.DEFAULT, backgroundColor: theme.colors.primary.DEFAULT }
+                                ]}
+                                onPress={handleCreateTask}
+                            >
+                                <Feather name="plus" size={16} color={theme.colors.white} style={{ marginRight: theme.spacing[2] }} />
+                                <Text weight="medium" style={{ color: theme.colors.white, fontSize: 13 }}>
+                                    Create Task
+                                </Text>
+                            </TouchableOpacity>
+
+                            <View style={styles.headerIcons}>
+                                <TouchableOpacity style={styles.iconButton} onPress={() => setModalVisible(false)}>
+                                    <Feather name="x" size={20} color={theme.colors.foreground} />
+                                </TouchableOpacity>
+                            </View>
+                        </View>
+
+                        <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+                            <TextInput
+                                style={styles.asanaTitleInput}
+                                value={newTaskTitle}
+                                multiline
+                                placeholder="New Task Title"
+                                placeholderTextColor={theme.colors.gray[400]}
+                                onChangeText={setNewTaskTitle}
+                            />
+
+                            <View style={styles.metaContainer}>
+                                <View style={styles.metaRow}>
+                                    <Text style={styles.metaLabel}>Assignee</Text>
+                                    <TouchableOpacity
+                                        style={styles.metaValueContainer}
+                                        onPress={() => handlePickContact(true)}
+                                    >
+                                        <View style={styles.assigneeAvatar}>
+                                            <Text style={{ color: theme.colors.white, fontSize: 10, fontWeight: 'bold' }}>
+                                                {(newTaskAssignee || 'U').charAt(0).toUpperCase()}
+                                            </Text>
+                                        </View>
+                                        <Text style={styles.metaValueText}>{newTaskAssignee || 'Unassigned'}</Text>
+                                        <Feather name="chevron-down" size={14} color={theme.colors.muted.foreground} style={{ marginLeft: 6 }} />
+                                    </TouchableOpacity>
                                 </View>
-                                <Button
-                                    variant="outline"
-                                    onPress={() => handlePickContact(true)}
-                                    style={{ marginTop: 8, marginBottom: 8, borderColor: theme.colors.primary.DEFAULT }}
-                                >
-                                    <Feather name="user-plus" size={16} color={theme.colors.primary.DEFAULT} style={{ marginRight: 8 }} />
-                                    Choose from Contacts
-                                </Button>
 
-                                <Button
-                                    variant="outline"
-                                    onPress={() => setDependencyModalVisible(true)}
-                                    style={{ marginTop: 8, marginBottom: 8 }}
-                                >
-                                    <Feather name="link" size={16} color={theme.colors.foreground} style={{ marginRight: 8 }} />
-                                    Dependencies ({newTaskDependencies.length})
-                                </Button>
+                                <View style={styles.metaRow}>
+                                    <Text style={styles.metaLabel}>Start date</Text>
+                                    {Platform.OS === 'ios' ? (
+                                        <DateTimePicker
+                                            value={newTaskStartDate ? new Date(newTaskStartDate) : new Date()}
+                                            mode={'date'}
+                                            display="compact"
+                                            onChange={onNewTaskStartDateChange}
+                                            accentColor={theme.colors.primary.DEFAULT}
+                                            themeVariant="light"
+                                            style={{ alignSelf: 'flex-start' }}
+                                        />
+                                    ) : (
+                                        <>
+                                            <TouchableOpacity
+                                                style={styles.metaValueContainer}
+                                                onPress={() => setShowNewTaskStartDatePicker(true)}
+                                            >
+                                                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                                    <Feather name="calendar" size={18} color={theme.colors.muted.foreground} />
+                                                    <Text style={[styles.metaValueText, { marginLeft: theme.spacing[3] }]}>
+                                                        {newTaskStartDate ? formatDate(newTaskStartDate) : 'Set date'}
+                                                    </Text>
+                                                </View>
+                                            </TouchableOpacity>
+                                            {showNewTaskStartDatePicker && (
+                                                <DateTimePicker
+                                                    value={newTaskStartDate ? new Date(newTaskStartDate) : new Date()}
+                                                    mode={'date'}
+                                                    display="default"
+                                                    onChange={onNewTaskStartDateChange}
+                                                    accentColor={theme.colors.primary.DEFAULT}
+                                                />
+                                            )}
+                                        </>
+                                    )}
+                                </View>
 
-                                {checkDependencyConflicts(newTaskStartDate, newTaskDependencies) && (
-                                    <View style={{ backgroundColor: '#fff7ed', padding: 8, borderRadius: 4, marginTop: 4 }}>
-                                        <Text style={{ color: '#c2410c', fontWeight: 'bold' }}>
-                                            ⚠️ Starts before dependency "{checkDependencyConflicts(newTaskStartDate, newTaskDependencies).title}" ends.
+                                <View style={styles.metaRow}>
+                                    <Text style={styles.metaLabel}>End date</Text>
+                                    {Platform.OS === 'ios' ? (
+                                        <DateTimePicker
+                                            value={newTaskDueDate ? new Date(newTaskDueDate) : new Date()}
+                                            mode={'date'}
+                                            display="compact"
+                                            onChange={onNewTaskEndDateChange}
+                                            accentColor={theme.colors.primary.DEFAULT}
+                                            themeVariant="light"
+                                            minimumDate={newTaskStartDate ? new Date(newTaskStartDate) : undefined}
+                                            style={{ alignSelf: 'flex-start' }}
+                                        />
+                                    ) : (
+                                        <>
+                                            <TouchableOpacity
+                                                style={styles.metaValueContainer}
+                                                onPress={() => setShowNewTaskEndDatePicker(true)}
+                                            >
+                                                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                                    <Feather name="calendar" size={18} color={theme.colors.muted.foreground} />
+                                                    <Text style={[styles.metaValueText, { marginLeft: theme.spacing[3] }]}>
+                                                        {newTaskDueDate ? formatDate(newTaskDueDate) : 'Set date'}
+                                                    </Text>
+                                                </View>
+                                            </TouchableOpacity>
+                                            {showNewTaskEndDatePicker && (
+                                                <DateTimePicker
+                                                    value={newTaskDueDate ? new Date(newTaskDueDate) : new Date()}
+                                                    mode={'date'}
+                                                    display="default"
+                                                    onChange={onNewTaskEndDateChange}
+                                                    accentColor={theme.colors.primary.DEFAULT}
+                                                    minimumDate={newTaskStartDate ? new Date(newTaskStartDate) : undefined}
+                                                />
+                                            )}
+                                        </>
+                                    )}
+                                </View>
+
+                                {calculatedDurationString ? (
+                                    <View style={[styles.metaRow, { marginTop: -8 }]}>
+                                        <Text style={styles.metaLabel}>Duration</Text>
+                                        <View style={styles.metaValueContainer}>
+                                            <Text style={[styles.metaValueText, { color: theme.colors.muted.foreground, fontStyle: 'italic' }]}>
+                                                {calculatedDurationString}
+                                            </Text>
+                                        </View>
+                                    </View>
+                                ) : null}
+
+                                <View style={styles.metaRow}>
+                                    <Text style={styles.metaLabel}>Applies to</Text>
+                                    <View style={styles.metaValueContainer}>
+                                        <View style={styles.projectBadge}>
+                                            <Text style={{ fontSize: 12, fontWeight: '600', color: theme.colors.primary.DEFAULT }}>{projectName}</Text>
+                                        </View>
+                                    </View>
+                                </View>
+
+                                <View style={styles.metaRow}>
+                                    <Text style={styles.metaLabel}>Dependencies</Text>
+                                    <TouchableOpacity
+                                        style={styles.metaValueContainer}
+                                        onPress={() => setDependencyModalVisible(true)}
+                                    >
+                                        <Feather name="link" size={16} color={theme.colors.muted.foreground} style={{ marginRight: 8 }} />
+                                        <Text style={styles.metaValueText}>
+                                            {newTaskDependencies.length > 0 ? `${newTaskDependencies.length} tasks` : 'Add dependencies'}
                                         </Text>
-                                    </View>
-                                )}
-
-                                {conflictWarning && (
-                                    <View style={{ backgroundColor: '#fee2e2', padding: 8, borderRadius: 4, marginTop: 4 }}>
-                                        <Text style={{ color: '#dc2626', fontWeight: 'bold' }}>⚠️ {conflictWarning}</Text>
-                                    </View>
-                                )}
-
-                                <View style={styles.modalButtons}>
-                                    <Button
-                                        variant="outline"
-                                        onPress={() => setModalVisible(false)}
-                                        style={{ flex: 1, marginRight: theme.spacing[2] }}
-                                    >
-                                        Cancel
-                                    </Button>
-                                    <Button
-                                        onPress={handleCreateTask}
-                                        style={{ flex: 1, marginLeft: theme.spacing[2] }}
-                                    >
-                                        Add Task
-                                    </Button>
+                                    </TouchableOpacity>
                                 </View>
-                            </CardContent>
-                        </Card>
+                            </View>
+
+                            <View style={styles.descriptionContainer}>
+                                <Text weight="medium" style={{ marginBottom: theme.spacing[2], fontSize: 14 }}>Description</Text>
+                                <TextInput
+                                    style={styles.descriptionInput}
+                                    value={newTaskDescription}
+                                    multiline
+                                    placeholder="What is this task about?"
+                                    placeholderTextColor={theme.colors.muted.foreground}
+                                    onChangeText={setNewTaskDescription}
+                                />
+                            </View>
+
+                            {checkDependencyConflicts(newTaskStartDate, newTaskDependencies) && (
+                                <View style={{ backgroundColor: '#fff7ed', padding: 8, borderRadius: 4, marginBottom: 16 }}>
+                                    <Text style={{ color: '#c2410c', fontWeight: 'bold' }}>
+                                        ⚠️ Starts before dependency "{checkDependencyConflicts(newTaskStartDate, newTaskDependencies).title}" ends.
+                                    </Text>
+                                </View>
+                            )}
+
+                            {conflictWarning && (
+                                <View style={{ backgroundColor: '#fee2e2', padding: 8, borderRadius: 4, marginBottom: 16 }}>
+                                    <Text style={{ color: '#dc2626', fontWeight: 'bold' }}>⚠️ {conflictWarning}</Text>
+                                </View>
+                            )}
+                        </ScrollView>
                     </View>
-                </Modal>
+                </BottomSheet>
 
 
 
@@ -936,31 +1061,89 @@ export default function ProjectDetailScreen({ route, navigation }) {
 
                                     <View style={styles.metaRow}>
                                         <Text style={styles.metaLabel}>Start date</Text>
-                                        <View style={styles.metaValueContainer}>
-                                            <View style={styles.detailRow}>
-                                                <Feather name="calendar" size={18} color={theme.colors.muted.foreground} />
-                                                <View style={{ marginLeft: theme.spacing[3] }}>
-                                                    <Text variant="small" style={{ color: theme.colors.muted.foreground }}>Start Date</Text>
-                                                    <Text>{selectedTask.startDate ? formatDate(selectedTask.startDate) : 'Not set'}</Text>
-                                                </View>
-                                            </View>
-                                        </View>
+                                        {Platform.OS === 'ios' ? (
+                                            <DateTimePicker
+                                                testID="startDatePicker"
+                                                value={selectedTask.startDate ? new Date(selectedTask.startDate) : new Date()}
+                                                mode={'date'}
+                                                display="compact"
+                                                onChange={onStartDateChange}
+                                                accentColor={theme.colors.primary.DEFAULT}
+                                                themeVariant="light"
+                                                textColor={theme.colors.foreground}
+                                                style={{ alignSelf: 'flex-start' }}
+                                            />
+                                        ) : (
+                                            <>
+                                                <TouchableOpacity
+                                                    style={styles.metaValueContainer}
+                                                    onPress={() => setShowStartDatePicker(true)}
+                                                >
+                                                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                                        <Feather name="calendar" size={18} color={theme.colors.muted.foreground} />
+                                                        <Text style={[styles.metaValueText, { marginLeft: theme.spacing[3] }]}>
+                                                            {selectedTask.startDate ? formatDate(selectedTask.startDate) : 'Set date'}
+                                                        </Text>
+                                                    </View>
+                                                </TouchableOpacity>
+                                                {showStartDatePicker && (
+                                                    <DateTimePicker
+                                                        testID="dateTimePicker"
+                                                        value={selectedTask.startDate ? new Date(selectedTask.startDate) : new Date()}
+                                                        mode={'date'}
+                                                        display="default"
+                                                        onChange={onStartDateChange}
+                                                        accentColor={theme.colors.primary.DEFAULT}
+                                                    />
+                                                )}
+                                            </>
+                                        )}
                                     </View>
 
                                     <View style={styles.metaRow}>
                                         <Text style={styles.metaLabel}>Due date</Text>
-                                        <View style={styles.metaValueContainer}>
-                                            <View style={styles.detailRow}>
-                                                <Feather name="flag" size={18} color={theme.colors.muted.foreground} />
-                                                <View style={{ marginLeft: theme.spacing[3] }}>
-                                                    <Text variant="small" style={{ color: theme.colors.muted.foreground }}>Due Date</Text>
-                                                    <Text>{selectedTask.dueDate ? formatDate(selectedTask.dueDate) : 'Not set'}</Text>
-                                                </View>
-                                            </View>
-                                            {selectedTask.status === 'done' && (
-                                                <Text style={{ marginLeft: theme.spacing[3], color: theme.colors.emerald[600], fontSize: 13 }}>Done</Text>
-                                            )}
-                                        </View>
+                                        {Platform.OS === 'ios' ? (
+                                            <DateTimePicker
+                                                testID="dueDatePicker"
+                                                value={selectedTask.dueDate ? new Date(selectedTask.dueDate) : new Date()}
+                                                mode={'date'}
+                                                display="compact"
+                                                onChange={onDueDateChange}
+                                                accentColor={theme.colors.primary.DEFAULT}
+                                                themeVariant="light"
+                                                textColor={theme.colors.foreground}
+                                                minimumDate={selectedTask.startDate ? new Date(selectedTask.startDate) : undefined}
+                                                style={{ alignSelf: 'flex-start' }}
+                                            />
+                                        ) : (
+                                            <>
+                                                <TouchableOpacity
+                                                    style={styles.metaValueContainer}
+                                                    onPress={() => setShowDueDatePicker(true)}
+                                                >
+                                                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                                        <Feather name="calendar" size={18} color={theme.colors.muted.foreground} />
+                                                        <Text style={[styles.metaValueText, { marginLeft: theme.spacing[3] }]}>
+                                                            {selectedTask.dueDate ? formatDate(selectedTask.dueDate) : 'Set date'}
+                                                        </Text>
+                                                    </View>
+                                                    {selectedTask.status === 'done' && (
+                                                        <Text style={{ marginLeft: theme.spacing[3], color: theme.colors.emerald[600], fontSize: 13 }}>Done</Text>
+                                                    )}
+                                                </TouchableOpacity>
+                                                {showDueDatePicker && (
+                                                    <DateTimePicker
+                                                        testID="dateTimePicker"
+                                                        value={selectedTask.dueDate ? new Date(selectedTask.dueDate) : new Date()}
+                                                        mode={'date'}
+                                                        display="default"
+                                                        onChange={onDueDateChange}
+                                                        accentColor={theme.colors.primary.DEFAULT}
+                                                        minimumDate={selectedTask.startDate ? new Date(selectedTask.startDate) : undefined}
+                                                    />
+                                                )}
+                                            </>
+                                        )}
                                     </View>
 
                                     <View style={styles.metaRow}>
@@ -1048,7 +1231,7 @@ export default function ProjectDetailScreen({ route, navigation }) {
                     </TouchableOpacity>
                 </Modal>
             </View>
-        </SafeAreaView>
+        </SafeAreaView >
     );
 }
 
@@ -1417,15 +1600,7 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
     },
-    avatarPlaceholder: {
-        width: 28,
-        height: 28,
-        borderRadius: 14,
-        backgroundColor: theme.colors.primary.light,
-        justifyContent: 'center',
-        alignItems: 'center',
-        marginRight: theme.spacing[3],
-    },
+
     roundButton: {
         width: 32,
         height: 32,

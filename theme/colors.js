@@ -18,7 +18,20 @@ export const colors = {
     },
     emerald: {
         600: '#059669',
+        400: '#34d399', // Added for success/logs compatibility
     },
+    blue: {
+        400: '#60a5fa',
+    },
+    amber: {
+        400: '#fbbf24',
+    },
+    sky: {
+        400: '#38bdf8', // Used for 'new' indicators
+    },
+
+    // UI Specific
+    overlay: 'rgba(0, 0, 0, 0.5)',
 
     // Primary Accent (Violet)
     primary: {

@@ -12,7 +12,7 @@ import ProjectProcessingOverlay from '../components/ProjectProcessingOverlay';
 
 import { DeviceEventEmitter } from 'react-native';
 import { Feather } from '@expo/vector-icons';
-// ... imports
+import { Header } from '../components/ui/Header';
 
 export default function DashboardScreen({ navigation }) {
     const [projects, setProjects] = useState([]);
@@ -101,12 +101,15 @@ export default function DashboardScreen({ navigation }) {
 
     return (
         <SafeAreaView style={styles.container}>
-            <View style={styles.header}>
-                <Text variant="h2">My Projects</Text>
-                <Button variant="ghost" onPress={handleLogout} size="sm">
-                    <Text style={{ color: theme.colors.destructive.DEFAULT }}>Log Out</Text>
-                </Button>
-            </View>
+            <Header
+                title="My Projects"
+                showBack={false}
+                rightAction={
+                    <Button variant="ghost" onPress={handleLogout} size="sm">
+                        <Text style={{ color: theme.colors.destructive.DEFAULT }}>Log Out</Text>
+                    </Button>
+                }
+            />
 
             <FlatList
                 data={projects}
@@ -137,16 +140,9 @@ const styles = StyleSheet.create({
         flex: 1,
         backgroundColor: theme.colors.gray[50],
     },
-    header: {
-        padding: theme.spacing[6],
-        paddingTop: Platform.OS === 'android' ? theme.spacing[12] : theme.spacing[6],
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-    },
+
     list: {
         padding: theme.spacing[6],
-        paddingTop: 0,
     },
     projectCard: {
         marginBottom: theme.spacing[4],

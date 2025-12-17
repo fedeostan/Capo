@@ -41,7 +41,7 @@ const LogItem = ({ item }) => {
                     <Feather name={iconName} size={14} color={color} style={{ marginRight: 8 }} />
                     <Text style={[styles.logStep, { color }]}>{item.step}</Text>
                 </View>
-                <Text style={styles.logDetail}>{item.detail}</Text>
+                <Text style={styles.logDetail} selectable={true}>{typeof item.detail === 'string' ? item.detail : JSON.stringify(item.detail, null, 2)}</Text>
             </View>
         </View>
     );

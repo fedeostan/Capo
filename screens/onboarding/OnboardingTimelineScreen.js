@@ -6,6 +6,8 @@ import { Button } from '../../components/ui/Button';
 import { Text } from '../../components/ui/Text';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '../../components/ui/Card';
 import { Feather } from '@expo/vector-icons';
+import DateTimePicker from '@react-native-community/datetimepicker';
+import { formatDate } from '../../utils/formatDate';
 
 
 // Assuming DateTimePicker is available or I need to handle it. 
@@ -22,10 +24,18 @@ import { Feather } from '@expo/vector-icons';
 export default function OnboardingTimelineScreen({ navigation, route }) {
     const { projectName, quoteUri, isOnboarding } = route.params;
 
-    // Default dates
     const today = new Date();
     const [startDate, setStartDate] = useState(today.toISOString().split('T')[0]); // YYYY-MM-DD
+    const [showDatePicker, setShowDatePicker] = useState(false);
     const [durationWeeks, setDurationWeeks] = useState('4');
+
+    const onDateChange = (event, selectedDate) => {
+        const currentDate = selectedDate || new Date(startDate);
+        setStartDate(currentDate.toISOString().split('T')[0]);
+        if (Platform.OS === 'android') {
+            setShowDatePicker(false);
+        }
+    };
 
     // Calculate deadline based on duration
     const getDeadline = () => {
@@ -73,12 +83,40 @@ export default function OnboardingTimelineScreen({ navigation, route }) {
                     </CardHeader>
                     <CardContent>
 
-                        <Text style={styles.label}>Start Date (YYYY-MM-DD)</Text>
-                        <View style={styles.inputContainer}>
-                            <Feather name="calendar" size={20} color={theme.colors.gray[400]} style={styles.icon} />
-                            {/* Using a simple TextInput for date to avoid dependency issues */}
-                            <Text style={styles.dateText}>{startDate}</Text>
-                            {/* In a real app we'd have a picker here, but for now we default to today/tomorrow */}
+                        <Text style={styles.label}>Start Date</Text>
+                        <View style={{ marginBottom: theme.spacing[4] }}>
+                            {Platform.OS === 'ios' ? (
+                                <DateTimePicker
+                                    testID="dateTimePicker"
+                                    value={new Date(startDate)}
+                                    mode={'date'}
+                                    display="compact"
+                                    onChange={onDateChange}
+                                    themeVariant="light"
+                                    accentColor={theme.colors.primary.DEFAULT}
+                                    textColor={theme.colors.foreground}
+                                    style={{ alignSelf: 'flex-start' }}
+                                />
+                            ) : (
+                                <>
+                                    <TouchableOpacity
+                                        style={styles.inputContainer}
+                                        onPress={() => setShowDatePicker(true)}
+                                    >
+                                        <Feather name="calendar" size={20} color={theme.colors.gray[400]} style={styles.icon} />
+                                        <Text style={styles.dateText}>{formatDate(startDate)}</Text>
+                                    </TouchableOpacity>
+                                    {showDatePicker && (
+                                        <DateTimePicker
+                                            testID="dateTimePicker"
+                                            value={new Date(startDate)}
+                                            mode={'date'}
+                                            display="default"
+                                            onChange={onDateChange}
+                                        />
+                                    )}
+                                </>
+                            )}
                         </View>
                         <Text variant="muted" style={{ fontSize: 12, marginBottom: theme.spacing[4] }}>
                             *Currently set to start today.

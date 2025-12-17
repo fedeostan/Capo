@@ -19,6 +19,7 @@ export default function UploadQuoteScreen({ route, navigation }) {
         let result = await ImagePicker.launchImageLibraryAsync({
             mediaTypes: ImagePicker.MediaTypeOptions.Images,
             allowsEditing: Platform.OS === 'ios', // Disable editing on Android to avoid UI issues
+            aspect: [3, 4],
             quality: 1,
         });
 
@@ -36,6 +37,7 @@ export default function UploadQuoteScreen({ route, navigation }) {
 
         let result = await ImagePicker.launchCameraAsync({
             allowsEditing: Platform.OS === 'ios',
+            aspect: [3, 4],
             quality: 1,
         });
 

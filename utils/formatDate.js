@@ -8,9 +8,9 @@ export const formatDate = (date) => {
     // Check if valid date
     if (isNaN(d.getTime())) return '';
 
-    return d.toLocaleDateString('en-GB', {
-        day: 'numeric',
-        month: 'long',
-        year: 'numeric'
-    });
+    const day = d.getDate();
+    const month = d.toLocaleDateString('en-GB', { month: 'long' });
+    const year = d.getFullYear();
+
+    return `${day} ${month}, ${year}`;
 };
